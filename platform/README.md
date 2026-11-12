@@ -15,13 +15,17 @@ Gotify's database. Existing production Gotify/iGotify deployments stay unchanged
 - Local Go race tests and vet pass. Real MySQL 8.4.13 integration passed on the
   isolated ECS, along with ten HTTP acceptance groups and a database/API restart
   check. RDS and multi-node acceptance are still pending.
-- The separate Android 0.2 internal app has person-scoped Room storage, a durable
-  offline state queue, bounded foreground retries and explicit conflict handling.
-  All 77 Android unit tests pass; build/lint pass with no errors and seven warnings.
-  Seven Android 36 emulator UI workflows passed against a synthetic API fixture.
-  A later two-emulator run passed eight checks against the deployed Go API/MySQL,
+- The separate Android 0.3 internal app reuses the released client's message UI,
+  bundled icon and Markdown renderer, backed by personal identity, Room storage,
+  a durable offline state queue and explicit conflict handling. All 90 Android
+  unit tests pass, including non-destructive cache migration; build/lint pass
+  with no errors and 13 warnings. Eight Android 36 emulator checks passed against
+  a synthetic API fixture, including narrow layouts and account isolation.
+  See `docs/android-released-ui-acceptance.md` for evidence and remaining limits.
+- The earlier Android 0.2 two-emulator run passed eight checks against the deployed Go API/MySQL,
   including same-person sync, different-person isolation, offline queue recovery
   and authorization revocation. See `docs/android-deployed-acceptance.md`.
+  These deployed results are not claimed for the 0.3 UI/API increment.
   Physical-phone and background delivery acceptance remain pending.
 - Docker test deployment is isolated from the old Gotify/iGotify projects and
   existing ECS websites. Database credentials are supplied through a secret file.

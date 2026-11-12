@@ -1,6 +1,8 @@
 <resources>
-    <style name="AppTheme" parent="android:style/Theme.Material.Light">
-        <item name="android:colorAccent">#087F8C</item>
+    <style name="AppTheme" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="colorPrimary">#4264C6</item>
+        <item name="colorPrimaryVariant">#334FA1</item>
+        <item name="colorSecondary">#087F8C</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:fontFamily">sans</item>

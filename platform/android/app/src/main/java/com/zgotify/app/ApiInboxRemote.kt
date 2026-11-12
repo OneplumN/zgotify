@@ -44,7 +44,8 @@ class ApiInboxRemote(private val profile: Profile) : InboxRemote {
         val priority = number(json, "priority")
         require(title.length <= 1024 && body.codePointCount(0, body.length) <= 65536 && priority in 0..10)
         return InboxMessage(positive(json, "id"), positive(json, "topic_id"), title, body, priority.toInt(),
-            string(json, "created_at"), state(json.getJSONObject("state")))
+            string(json, "created_at"), state(json.getJSONObject("state")),
+            contentType = if ((json.opt("content_type") as? String) == "text/markdown") "text/markdown" else "text/plain")
     }
 
     private fun state(json: JSONObject): PersonalState {

@@ -1,7 +1,6 @@
 package com.zgotify.app
 
 import android.Manifest
-import android.app.Activity
 import android.app.AlertDialog
 import android.app.Notification
 import android.app.NotificationChannel
@@ -18,18 +17,23 @@ import android.text.InputType
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
-import android.view.ViewGroup
-import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONObject
 import java.util.concurrent.Executors
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.DividerItemDecoration
+import androidx.recyclerview.widget.RecyclerView
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import com.zgotify.app.databinding.ActivityMessagesBinding
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
     companion object {
         // Serialize persistence across Activity recreation, including old in-flight requests.
         private val inboxWorker = Executors.newSingleThreadExecutor()
@@ -37,7 +41,10 @@ class MainActivity : Activity() {
     private lateinit var profiles: ProfileStore
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
-    private lateinit var list: ListView
+    private lateinit var list: RecyclerView
+    private lateinit var adapter: ListMessageAdapter
+    private lateinit var swipeRefresh: SwipeRefreshLayout
+    private lateinit var emptyInbox: TextView
     private lateinit var cache: RoomMessageCache
     private lateinit var sync: InboxSync
     private var messages = listOf<InboxRow>()
@@ -64,27 +71,24 @@ class MainActivity : Activity() {
         cache = RoomMessageCache(applicationContext)
         sync = InboxSync(cache)
         title = "zgotify"
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(16, 8, 16, 8)
-            setOnApplyWindowInsetsListener { view, insets ->
-                if (Build.VERSION.SDK_INT >= 30) {
-                    val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars())
-                    view.setPadding(16, bars.top, 16, bars.bottom)
-                } else {
-                    view.setPadding(16, insets.systemWindowInsetTop, 16, insets.systemWindowInsetBottom)
-                }
-                insets
-            }
+        val binding = ActivityMessagesBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
         }
-        status = TextView(this).apply { textSize = 14f; setPadding(12, 12, 12, 12) }
-        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { isIndeterminate = true; visibility = View.GONE }
-        list = ListView(this)
-        root.addView(status)
-        root.addView(progress, LinearLayout.LayoutParams(-1, 8))
-        root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
-        setContentView(root)
-        list.setOnItemClickListener { _, _, position, _ -> messages.getOrNull(position)?.let(::showMessage) }
+        setSupportActionBar(binding.toolbar)
+        status = binding.syncStatus
+        progress = binding.progress
+        list = binding.messagesView
+        emptyInbox = binding.emptyInbox
+        swipeRefresh = binding.swipeRefresh
+        list.layoutManager = LinearLayoutManager(this)
+        list.addItemDecoration(DividerItemDecoration(this, DividerItemDecoration.VERTICAL))
+        resetList()
+        swipeRefresh.setOnChildScrollUpCallback { _, _ -> list.canScrollVertically(-1) }
+        swipeRefresh.setOnRefreshListener { refreshLatest(); swipeRefresh.isRefreshing = false }
         updateAccount()
         if (profiles.active() == null) login()
     }
@@ -95,7 +99,7 @@ class MainActivity : Activity() {
         dismissAccountDialogs()
         loading = false
         messages = emptyList()
-        list.adapter = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, emptyList())
+        resetList()
         status.text = if (profiles.active() == null) "暂无账号" else "验证身份与缓存"
         refresh()
         main.postDelayed(poll, 15000)
@@ -121,6 +125,7 @@ class MainActivity : Activity() {
         menu.add(0, 8, 7, "注销当前设备")
         menu.add(0, 9, 8, "修改密码")
         menu.add(0, 10, 9, "待同步修改")
+        menu.add(0, 11, 10, "开源许可")
         return true
     }
 
@@ -133,7 +138,7 @@ class MainActivity : Activity() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
-            1 -> { page = 0; refresh(force = true) }
+            1 -> refreshLatest()
             2 -> chooseAccount()
             3 -> login()
             4 -> { includeHidden = !includeHidden; item.isChecked = includeHidden; page = 0; refresh() }
@@ -143,6 +148,7 @@ class MainActivity : Activity() {
             8 -> logout()
             9 -> changePassword()
             10 -> pendingChanges()
+            11 -> licenses()
             else -> return super.onOptionsItemSelected(item)
         }
         return true
@@ -158,8 +164,8 @@ class MainActivity : Activity() {
         page = 0
         nextBefore = null
         messages = emptyList()
-        list.adapter = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, emptyList())
-        actionBar?.subtitle = profiles.active()?.let { "${it.username} · ${it.server}" } ?: "未登录"
+        resetList()
+        supportActionBar?.subtitle = profiles.active()?.let { "${it.username} · ${it.server}" } ?: "未登录"
         status.text = if (profiles.active() == null) "暂无账号" else ""
         refresh()
     }
@@ -193,7 +199,7 @@ class MainActivity : Activity() {
                         dismissAccountDialogs()
                         profiles.save(profile.copy(token = ""))
                         messages = emptyList()
-                        list.adapter = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, emptyList())
+                        resetList()
                         login(profile)
                     }
                 }
@@ -231,6 +237,12 @@ class MainActivity : Activity() {
         }, ::render)
     }
 
+    internal fun refreshLatest() {
+        if (loading) return
+        page = 0
+        refresh(force = true)
+    }
+
     private fun render(snapshot: InboxSnapshot) {
         messages = snapshot.rows
         nextBefore = snapshot.nextBefore
@@ -238,23 +250,20 @@ class MainActivity : Activity() {
         status.setTextColor(if (snapshot.offline || snapshot.conflictCount > 0) Color.rgb(160, 65, 20) else Color.DKGRAY)
         val connection = when { snapshot.cacheExpired -> "请联网验证身份"; snapshot.offline -> "离线缓存"; else -> "在线" }
         status.text = "$connection · ${messages.size} 条 · 待同步 ${snapshot.pendingCount} · 待处理 ${snapshot.conflictCount}"
-        val rows = messages.map { row ->
-            val msg = row.message
-            val state = msg.state
-            val pending = row.pending
-            val flags = listOfNotNull(if (state.read) "已读" else "未读", if (state.hidden) "已隐藏" else null,
-                if (state.favorite) "已收藏" else null,
-                if (pending?.conflict == true || pending?.problem != null) "同步待处理" else if (pending != null) "待同步" else null)
-            "${msg.title}\n${flags.joinToString(" · ")} · P${msg.priority}\n${msg.body.take(160)}"
-        }
-        list.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, rows) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
-                (super.getView(position, convertView, parent) as TextView).apply {
-                    textSize = 16f
-                    setPadding(14, 20, 14, 20)
-                    maxLines = 6
-                }
-        }
+        adapter.submitList(messages)
+        emptyInbox.visibility = if (messages.isEmpty()) View.VISIBLE else View.GONE
+    }
+
+    private fun resetList() {
+        // A fresh adapter fences asynchronous diffs from the previous personal account.
+        val profile = profiles.active()
+        val epoch = generation
+        adapter = ListMessageAdapter(this,
+            { row -> if (profile != null && current(profile, epoch)) showMessage(row) },
+            { row -> if (profile != null && current(profile, epoch)) messageActions(row) },
+        )
+        list.adapter = adapter
+        emptyInbox.visibility = View.GONE
     }
 
     private fun login(existing: Profile? = null) {
@@ -319,23 +328,40 @@ class MainActivity : Activity() {
         val epoch = generation
         val message = row.message
         if (row.pending?.conflict == true || row.pending?.problem != null) { resolveConflict(profile, row); return }
-        val state = message.state
-        val options = arrayOf(if (state.read) "标记未读" else "标记已读", if (state.hidden) "取消隐藏" else "为我隐藏", if (state.favorite) "取消收藏" else "收藏")
-        val body = TextView(this).apply { text = message.body; setPadding(32, 20, 32, 20); setTextIsSelectable(true) }
+        val body = TextView(this).apply { setPadding(32, 20, 32, 20); setTextIsSelectable(true) }
+        MarkwonFactory.createForMessage(this).renderBody(body, message.body, message.contentType)
         val content = android.widget.ScrollView(this).apply { addView(body) }
         AlertDialog.Builder(this).setTitle(message.title).setView(content)
             .setPositiveButton("操作") { _, _ ->
                 if (!current(profile, epoch)) return@setPositiveButton
-                AlertDialog.Builder(this).setTitle("个人状态").setItems(options) { _, index ->
-                    if (!current(profile, epoch)) return@setItems
-                    val property = StateField.entries[index]
-                    val value = !listOf(state.read, state.hidden, state.favorite)[index]
-                    request(profile, {
-                        sync.queue(profile.cacheKey, message.id, property, value)
-                        sync.cached(profile.cacheKey, includeHidden, page)
-                    }) { render(it); refresh(force = true) }
-                }.setNegativeButton("取消", null).create().also(::showAccountDialog)
+                messageActions(row)
             }.setNegativeButton("关闭", null).create().also(::showAccountDialog)
+    }
+
+    private fun messageActions(row: InboxRow) {
+        if (loading) return
+        val profile = profiles.active() ?: return
+        val epoch = generation
+        if (row.pending?.conflict == true || row.pending?.problem != null) { resolveConflict(profile, row); return }
+        val state = row.message.state
+        val options = arrayOf(if (state.read) "标记未读" else "标记已读", if (state.hidden) "取消隐藏" else "为我隐藏", if (state.favorite) "取消收藏" else "收藏")
+        AlertDialog.Builder(this).setTitle("个人状态").setItems(options) { _, index ->
+            if (!current(profile, epoch)) return@setItems
+            val property = StateField.entries[index]
+            val value = !listOf(state.read, state.hidden, state.favorite)[index]
+            request(profile, {
+                sync.queue(profile.cacheKey, row.message.id, property, value)
+                sync.cached(profile.cacheKey, includeHidden, page)
+            }) { render(it); refresh(force = true) }
+        }.setNegativeButton("取消", null).create().also(::showAccountDialog)
+    }
+
+    private fun licenses() {
+        val text = assets.open("licenses/gotify-MIT.txt").bufferedReader().use { it.readText() }
+        val body = TextView(this).apply { this.text = text; setPadding(24, 16, 24, 16); setTextIsSelectable(true) }
+        AlertDialog.Builder(this).setTitle("Gotify · MIT")
+            .setView(android.widget.ScrollView(this).apply { addView(body) })
+            .setPositiveButton("关闭", null).show()
     }
 
     private fun resolveConflict(profile: Profile, row: InboxRow) {
@@ -418,7 +444,7 @@ class MainActivity : Activity() {
             .setPositiveButton("测试通知") { _, _ ->
                 if (!granted && Build.VERSION.SDK_INT >= 33) { requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1) }
                 else {
-                    manager.notify(1, Notification.Builder(this, "zgotify_alerts_high").setSmallIcon(android.R.drawable.ic_dialog_email)
+                    manager.notify(1, Notification.Builder(this, "zgotify_alerts_high").setSmallIcon(R.drawable.ic_alarm)
                         .setContentTitle("zgotify").setContentText("本机测试通知").setAutoCancel(true).build())
                     Toast.makeText(this, "已提交测试通知", Toast.LENGTH_SHORT).show()
                 }

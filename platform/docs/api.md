@@ -81,12 +81,28 @@ already delivered to an offline client.
     "topic_id":3,
     "title":"CPU alert",
     "message":"High load",
+    "content_type":"text/plain",
     "priority":8,
     "created_at":"2026-11-12T01:02:03.456Z",
     "state":{"read":true,"hidden":true,"favorite":false,"version":7}
   }
 }
 ```
+
+Both the inbox list and detail always include the additive `content_type` field.
+Its only values are `text/plain` and `text/markdown`. Markdown is enabled only
+when the stored Gotify original JSON in `gotify_import_metadata.payload` has
+`extras["client::display"].contentType` equal to the exact string `text/markdown`.
+Keys and the value are case-sensitive; whitespace and MIME parameters are not
+normalized. Missing metadata or keys, malformed JSON, incorrect value types and
+all other values fall back to `text/plain`. Message text is returned unchanged;
+Markdown-looking text alone never enables Markdown rendering.
+
+Only this derived value is exposed. Raw payloads/extras, including extra URLs,
+tokens and other private metadata, are not returned. URLs in extras are not
+fetched. The stored metadata is left-joined by message ID within the
+membership-authorized read; it grants no additional access and does not change
+personal state, filters, ordering or the 100-message inbox limit.
 
 Current topic membership is required, including for administrators. Hidden
 messages remain accessible to members without `include_hidden=true`; inbox
@@ -143,6 +159,10 @@ The separate `/v1/ingest` endpoint accepts the payload above. The same
 payload returns the existing message ID and `created:false`; a different payload
 under the same key returns 409. An ingestion token grants publishing only, never
 read access. Messages and the pending outbox row are committed atomically.
+
+Direct `/v1/ingest` messages remain `text/plain`, even with Markdown-looking
+bodies or Gotify-looking external IDs. `content_type` is response-only: neither
+it nor `extras` is accepted by `/v1/ingest`. The ingestion contract is unchanged.
 
 Schema v2 already includes `gotify_sources` and `gotify_import_metadata` for
 restartable, fenced import scans and source-message deduplication. Each imported

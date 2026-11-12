@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -92,8 +93,8 @@ func TestMissingMembershipCannotChangeState(t *testing.T) {
 
 func TestListMessagesUsesPersonalMembershipAndState(t *testing.T) {
 	store, m := testStore(t)
-	m.ExpectQuery("SELECT m.id,m.topic_id").WithArgs(uint64(22), uint64(22), uint64(0), uint64(0), false).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "topic_id", "title", "body", "priority", "created_at", "read", "hidden", "favorite", "version"}))
+	m.ExpectQuery("^"+regexp.QuoteMeta(messagesReadSQL)+"$").WithArgs(uint64(22), uint64(22), uint64(0), uint64(0), false).
+		WillReturnRows(readMessageRows())
 	messages, err := store.Messages(context.Background(), Session{Person: Person{ID: 22}}, 0, false)
 	if err != nil || len(messages) != 0 {
 		t.Fatalf("unexpected messages: %v %v", messages, err)

@@ -1,6 +1,7 @@
 package com.zgotify.app
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -10,6 +11,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Upsert
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import java.io.Closeable
 import java.util.concurrent.Callable
 
@@ -19,7 +22,7 @@ class RoomMessageCache(
 ) : MessageCache, Closeable {
     private val database = Room.databaseBuilder(
         context.applicationContext, RoomMessageDatabase::class.java, name,
-    ).build()
+    ).addMigrations(RoomMessageDatabase.MIGRATION_1_2).build()
     private val dao = database.cacheDao()
 
     override fun messages(account: String, before: Long): List<InboxMessage> =
@@ -107,11 +110,13 @@ internal data class CachedMessageEntity(
     val stateHidden: Boolean,
     val stateFavorite: Boolean,
     val stateVersion: Long,
+    @ColumnInfo(defaultValue = "'text/plain'") val contentType: String = "text/plain",
 ) {
     fun toMessage() = InboxMessage(
         id = messageId, topicId = topicId, title = title, body = body,
         priority = priority, createdAt = createdAt,
         state = PersonalState(stateRead, stateHidden, stateFavorite, stateVersion),
+        contentType = contentType,
     )
 
     companion object {
@@ -121,6 +126,7 @@ internal data class CachedMessageEntity(
             createdAt = message.createdAt, stateRead = message.state.read,
             stateHidden = message.state.hidden, stateFavorite = message.state.favorite,
             stateVersion = message.state.version,
+            contentType = message.contentType,
         )
     }
 }
@@ -233,9 +239,17 @@ internal interface MessageCacheDao {
 
 @Database(
     entities = [CachedMessageEntity::class, PendingStateEntity::class, AuthorizationEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 internal abstract class RoomMessageDatabase : RoomDatabase() {
     abstract fun cacheDao(): MessageCacheDao
+
+    companion object {
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cached_messages ADD COLUMN contentType TEXT NOT NULL DEFAULT 'text/plain'")
+            }
+        }
+    }
 }

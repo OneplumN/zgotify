@@ -304,16 +304,46 @@ class Device:
         self.active_identity(account)
         self.authenticated = True
 
+    def _message_row(self, title):
+        require(self.authenticated, "identity_mismatch")
+        title_id = self.package + ":id/message_title"
+        state_id = self.package + ":id/message_state"
+        text_id = self.package + ":id/message_text"
+
+        def matches(nodes):
+            if any(n.get("resource-id") in (title_id, state_id, text_id) for n in nodes):
+                rows = []
+                for node in nodes:
+                    titles = [child for child in node if child.get("resource-id") == title_id]
+                    if any(child.get("text") == title for child in titles):
+                        states = [child for child in node if child.get("resource-id") == state_id]
+                        require(len(titles) == 1 and len(states) == 1, "ui_shape")
+                        rows.append((titles[0], states[0].get("text", "")))
+                return rows
+            # Legacy 0.2 uses one TextView; never treat a released row's body as one.
+            return [(node, node.get("text").split("\n", 2)[1]) for node in nodes
+                    if node.get("class") == "android.widget.TextView"
+                    and node.get("text", "").startswith(title + "\n")]
+
+        def current(nodes):
+            unsafe = any(n.get("class") == "android.widget.EditText" or n.get("password") == "true"
+                         or "登录 zgotify" in n.get("text", "") for n in nodes)
+            return self.ready(nodes) and not unsafe and bool(matches(nodes))
+
+        rows = matches(self.wait(current))
+        require(len(rows) == 1, "ui_shape")
+        return rows[0]
+
     def row(self, title, read=False, hidden=False, favorite=False, pending=False):
-        node = self.text(title + "\n", exact=False)
-        flags = node.get("text", "").split("\n")[1].split(" · ")
+        _, state = self._message_row(title)
+        flags = state.split(" · ")
         require(("已读" in flags) == read and ("未读" in flags) != read
                 and ("已隐藏" in flags) == hidden and ("已收藏" in flags) == favorite
                 and ("待同步" in flags) == pending and "同步待处理" not in flags, "state_mismatch")
 
     def operation(self, title, operation):
-        self.wait(self.ready)
-        self.click(title + "\n", exact=False)
+        node, _ = self._message_row(title)
+        self.tap(node)
         self.click("操作")
         self.click(operation)
 

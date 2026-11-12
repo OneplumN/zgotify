@@ -73,13 +73,14 @@ type Topic struct {
 }
 
 type Message struct {
-	ID        uint64    `json:"id"`
-	TopicID   uint64    `json:"topic_id"`
-	Title     string    `json:"title"`
-	Body      string    `json:"message"`
-	Priority  int       `json:"priority"`
-	CreatedAt time.Time `json:"created_at"`
-	State     State     `json:"state"`
+	ID          uint64    `json:"id"`
+	TopicID     uint64    `json:"topic_id"`
+	Title       string    `json:"title"`
+	Body        string    `json:"message"`
+	ContentType string    `json:"content_type"`
+	Priority    int       `json:"priority"`
+	CreatedAt   time.Time `json:"created_at"`
+	State       State     `json:"state"`
 }
 
 type NewMessage struct {

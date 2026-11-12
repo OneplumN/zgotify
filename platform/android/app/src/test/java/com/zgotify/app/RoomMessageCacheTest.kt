@@ -2,12 +2,14 @@ package com.zgotify.app
 
 import android.content.Context
 import android.os.Looper
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -340,21 +342,130 @@ class RoomMessageCacheTest {
     }
 
     @Test
+    fun markdownContentTypeSurvivesReopenAndUpdatesWithoutChangingOtherAccountsOrQueuedState() = onWorker {
+        val state = PersonalState(read = true, hidden = true, favorite = true, version = 9)
+        val markdown = inbox(42).copy(body = "# Title\n\n**Markdown**", state = state,
+            contentType = "text/markdown")
+        val plain = inbox(42).copy(body = "**Plain text**")
+        val pending = PendingState("alpha", 42, 9, read = false, revision = 3)
+        cache.upsert("alpha", listOf(markdown))
+        cache.upsert("beta", listOf(plain))
+        cache.savePending(pending)
+
+        reopen()
+
+        assertEquals(markdown, cache.message("alpha", 42))
+        assertEquals(listOf(markdown), cache.messages("alpha"))
+        assertEquals(plain, cache.message("beta", 42))
+        assertEquals("text/plain", cache.message("beta", 42)!!.contentType)
+        assertEquals(listOf(pending), cache.pending("alpha"))
+
+        cache.upsert("alpha", listOf(plain))
+        reopen()
+
+        assertEquals(plain.copy(state = state), cache.message("alpha", 42))
+        assertEquals(listOf(pending), cache.pending("alpha"))
+        assertEquals(plain, cache.message("beta", 42))
+
+        cache.upsert("alpha", listOf(markdown.copy(state = PersonalState(version = 8))))
+        reopen()
+
+        assertEquals(markdown, cache.message("alpha", 42))
+        assertEquals(listOf(pending), cache.pending("alpha"))
+        assertEquals(plain, cache.message("beta", 42))
+    }
+
+    @Test
+    fun versionOneMigrationPreservesMessagesQueuedStateAuthorizationAndAccountIsolation() = onWorker {
+        val alpha = inbox(4_294_967_300L).copy(
+            title = "alpha legacy title", body = "**legacy plain text**",
+            state = PersonalState(read = true, hidden = true, favorite = true, version = 19),
+        )
+        val beta = alpha.copy(title = "beta legacy title", state = PersonalState(version = 7))
+        val alphaPending = PendingState(
+            "alpha", alpha.id, 19, read = false, hidden = null, favorite = true,
+            revision = 8, conflict = true, attempts = 3, nextAttemptAt = 987654321L,
+            problem = "version conflict",
+        )
+        val betaPending = PendingState(
+            "beta", beta.id, 7, read = null, hidden = false, favorite = null,
+            revision = 2, attempts = 1, nextAttemptAt = 123456789L, problem = "retry later",
+        )
+        createVersionOneDatabase(listOf(
+            Triple(alpha, alphaPending, 111L),
+            Triple(beta, betaPending, 222L),
+        ))
+        cache = RoomMessageCache(context, name)
+
+        assertEquals(listOf(alpha), cache.messages("alpha"))
+        assertEquals(listOf(beta), cache.messages("beta"))
+        assertEquals(listOf(alphaPending), cache.pending("alpha"))
+        assertEquals(listOf(betaPending), cache.pending("beta"))
+        assertEquals(111L, cache.authorizedAt("alpha"))
+        assertEquals(222L, cache.authorizedAt("beta"))
+        cache.close()
+        context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null).use { database ->
+            assertEquals(2, database.version)
+            database.rawQuery("SELECT contentType FROM cached_messages ORDER BY account", null).use { cursor ->
+                assertEquals(2, cursor.count)
+                while (cursor.moveToNext()) assertEquals("text/plain", cursor.getString(0))
+            }
+            database.rawQuery("PRAGMA foreign_key_check", null).use { cursor ->
+                assertEquals(0, cursor.count)
+            }
+        }
+        cache = RoomMessageCache(context, name)
+
+        assertEquals(alpha, cache.message("alpha", alpha.id))
+        assertEquals(beta, cache.message("beta", beta.id))
+        assertEquals(listOf(alphaPending), cache.pending("alpha"))
+        assertEquals(listOf(betaPending), cache.pending("beta"))
+        assertEquals(111L, cache.authorizedAt("alpha"))
+        assertEquals(222L, cache.authorizedAt("beta"))
+        assertNull(cache.message("unknown", alpha.id))
+        assertTrue(cache.pending("unknown").isEmpty())
+        assertNull(cache.authorizedAt("unknown"))
+
+        val markdown = alpha.copy(body = "# Migrated Markdown", contentType = "text/markdown")
+        cache.upsert("alpha", listOf(markdown))
+        reopen()
+
+        assertEquals(markdown, cache.message("alpha", alpha.id))
+        assertEquals(beta, cache.message("beta", beta.id))
+        assertEquals(listOf(alphaPending), cache.pending("alpha"))
+        assertEquals(listOf(betaPending), cache.pending("beta"))
+        assertEquals(111L, cache.authorizedAt("alpha"))
+        assertEquals(222L, cache.authorizedAt("beta"))
+
+        cache.removePending("alpha", alpha.id, alphaPending.revision - 1)
+        assertEquals(listOf(alphaPending), cache.pending("alpha"))
+        cache.authorize("alpha", emptySet(), 333L)
+        reopen()
+
+        assertTrue(cache.messages("alpha").isEmpty())
+        assertTrue(cache.pending("alpha").isEmpty())
+        assertEquals(333L, cache.authorizedAt("alpha"))
+        assertEquals(listOf(beta), cache.messages("beta"))
+        assertEquals(listOf(betaPending), cache.pending("beta"))
+        assertEquals(222L, cache.authorizedAt("beta"))
+    }
+
+    @Test
     fun unsupportedSchemaVersionFailsWithoutDestructivelyRecreatingData() = onWorker {
         cache.upsert("alpha", listOf(inbox(1)))
         cache.savePending(PendingState("alpha", 1, 0, read = true))
         cache.authorize("alpha", setOf(10), 100)
         cache.close()
         context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null).use { database ->
-            assertEquals(1, database.version)
-            database.version = 2
+            assertEquals(2, database.version)
+            database.version = 3
         }
         cache = RoomMessageCache(context, name)
 
         assertThrows(IllegalStateException::class.java) { cache.messages("alpha") }
 
         context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null).use { database ->
-            assertEquals(2, database.version)
+            assertEquals(3, database.version)
             for (table in listOf("cached_messages", "pending_states", "account_authorization")) {
                 database.rawQuery("SELECT COUNT(*) FROM $table", null).use { cursor ->
                     assertTrue(cursor.moveToFirst())
@@ -375,6 +486,54 @@ class RoomMessageCacheTest {
         id = id, topicId = topicId, title = "title $id", body = "body $id",
         priority = 5, createdAt = "2026-11-12T00:00:00Z", state = PersonalState(),
     )
+
+    private fun createVersionOneDatabase(rows: List<Triple<InboxMessage, PendingState, Long>>) {
+        cache.close()
+        val schemaPath = "schemas/com.zgotify.app.RoomMessageDatabase/1.json"
+        val schemaFile = listOf(File(schemaPath), File("app/$schemaPath"), File("android/app/$schemaPath"))
+            .first { it.isFile }
+        val schema = JSONObject(schemaFile.readText()).getJSONObject("database")
+        assertEquals(1, schema.getInt("version"))
+        context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null).use { database ->
+            database.setForeignKeyConstraintsEnabled(true)
+            val entities = schema.getJSONArray("entities")
+            for (index in 0 until entities.length()) {
+                val entity = entities.getJSONObject(index)
+                database.execSQL(entity.getString("createSql")
+                    .replace("\u0024{TABLE_NAME}", entity.getString("tableName")))
+            }
+            val setup = schema.getJSONArray("setupQueries")
+            for (index in 0 until setup.length()) database.execSQL(setup.getString(index))
+            for ((message, pending, authorizedAt) in rows) {
+                database.execSQL("""
+                    INSERT INTO cached_messages
+                    (account, messageId, topicId, title, body, priority, createdAt,
+                     stateRead, stateHidden, stateFavorite, stateVersion)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent(), arrayOf<Any?>(
+                    pending.account, message.id, message.topicId, message.title, message.body,
+                    message.priority, message.createdAt, message.state.read.toSql(),
+                    message.state.hidden.toSql(), message.state.favorite.toSql(), message.state.version,
+                ))
+                database.execSQL("""
+                    INSERT INTO pending_states
+                    (account, messageId, expectedVersion, read, hidden, favorite, revision,
+                     conflict, attempts, nextAttemptAt, problem)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent(), arrayOf<Any?>(
+                    pending.account, pending.messageId, pending.expectedVersion, pending.read.toSql(),
+                    pending.hidden.toSql(), pending.favorite.toSql(), pending.revision,
+                    pending.conflict.toSql(), pending.attempts, pending.nextAttemptAt, pending.problem,
+                ))
+                database.execSQL("INSERT INTO account_authorization (account, authorizedAt) VALUES (?, ?)",
+                    arrayOf<Any?>(pending.account, authorizedAt))
+            }
+            database.version = 1
+        }
+        assertTrue(context.getDatabasePath(name).isFile)
+    }
+
+    private fun Boolean?.toSql(): Int? = this?.let { if (it) 1 else 0 }
 
     private fun reopen() {
         cache.close()

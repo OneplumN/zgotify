@@ -121,6 +121,48 @@ class ApiInboxRemoteTest {
         request("GET", "/v1/messages/42")
     }
 
+    @Test fun existingPositionalMessageConstructorDefaultsToPlainText() {
+        assertEquals("text/plain", sample().contentType)
+    }
+
+    @Test fun inboxAndDetailPreserveExplicitMarkdownContentTypeAndBody() {
+        val body = "# Alert\n\n**High load** [details](https://example.test/alert)"
+        val json = messageJson().put("message", body).put("content_type", "text/markdown")
+        val expected = sample().copy(body = body, contentType = "text/markdown")
+
+        enqueue(JSONObject().put("messages", JSONArray().put(json)).toString())
+        assertEquals(listOf(expected), remote.messages(0))
+        request("GET", "/v1/messages?include_hidden=true&before=0")
+
+        enqueue(JSONObject().put("message", json).toString())
+        assertEquals(expected, remote.message(42))
+        request("GET", "/v1/messages/42")
+    }
+
+    @Test fun inboxAndDetailDefaultMissingUnknownOrMalformedContentTypesToPlainText() {
+        val contentTypes = listOf<Any?>(
+            null, JSONObject.NULL, "text/plain", "text/html", "application/json", "",
+            "Text/Markdown", "TEXT/MARKDOWN", " text/markdown", "text/markdown ",
+            "text/markdown; charset=utf-8", "text/markdown\n", "text/markdown\u0000",
+            1, 1.5, true, false, JSONObject().put("contentType", "text/markdown"),
+            JSONArray().put("text/markdown"),
+        )
+        val body = "**This remains plain text** <b>not HTML</b>"
+        for (contentType in contentTypes) {
+            val json = messageJson().put("message", body)
+            if (contentType != null) json.put("content_type", contentType)
+            val expected = sample().copy(body = body, contentType = "text/plain")
+
+            enqueue(JSONObject().put("messages", JSONArray().put(json)).toString())
+            assertEquals("Inbox content_type=$contentType", listOf(expected), remote.messages(0))
+            request("GET", "/v1/messages?include_hidden=true&before=0")
+
+            enqueue(JSONObject().put("message", json).toString())
+            assertEquals("Detail content_type=$contentType", expected, remote.message(42))
+            request("GET", "/v1/messages/42")
+        }
+    }
+
     @Test fun detailRejectsWrongMessageIdentityOrWrapper() {
         for (payload in listOf("{}", messageJson().toString(), """{"message":null}""",
             JSONObject().put("message", messageJson(99)).toString())) {

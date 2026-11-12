@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -83,7 +84,7 @@ func TestMySQLTwoPeopleTwoDevices(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	payload := NewMessage{ExternalID: "gotify:test-source:42", Title: "CPU alert", Body: "load is high", Priority: 9}
+	payload := NewMessage{ExternalID: "gotify:test-source:42", Title: "CPU alert", Body: "**load is high**", Priority: 9}
 	id, created, err := one.Ingest(ctx, ingestToken, payload)
 	if err != nil || !created {
 		t.Fatalf("ingest: %d %v %v", id, created, err)
@@ -115,18 +116,76 @@ func TestMySQLTwoPeopleTwoDevices(t *testing.T) {
 		t.Fatal(err)
 	}
 	aMessages, err := two.Messages(ctx, alice2, 0, true)
-	if err != nil || len(aMessages) != 1 || !aMessages[0].State.Read || !aMessages[0].State.Hidden {
+	if err != nil || len(aMessages) != 1 || !aMessages[0].State.Read || !aMessages[0].State.Hidden || aMessages[0].ContentType != "text/plain" {
 		t.Fatalf("cross-device state: %#v %v", aMessages, err)
 	}
 	bMessages, err := one.Messages(ctx, bob, 0, false)
-	if err != nil || len(bMessages) != 1 || bMessages[0].State.Read || bMessages[0].State.Hidden {
+	if err != nil || len(bMessages) != 1 || bMessages[0].State.Read || bMessages[0].State.Hidden || bMessages[0].ContentType != "text/plain" {
 		t.Fatalf("personal isolation: %#v %v", bMessages, err)
+	}
+	for _, actor := range []Session{alice2, bob} {
+		message, err := two.Message(ctx, actor, id)
+		if err != nil || message.ContentType != "text/plain" || message.Body != "**load is high**" {
+			t.Fatalf("direct ingest must stay plain: %#v %v", message, err)
+		}
+	}
+	source := GotifySource{Key: "markdown-test", TopicID: topic, Identity: strings.Repeat("a", 64)}
+	lease, err := one.ClaimGotify(ctx, source, strings.Repeat("b", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported := gotifyTestMessage(100)
+	imported.Body = "**imported alert**"
+	imported.Extras = json.RawMessage(`{"client::display":{"contentType":"text/markdown"},"private":"fixture-secret"}`)
+	if n, err := one.CommitGotify(ctx, lease, []GotifyMessage{imported}, 0); err != nil || n != 1 {
+		t.Fatalf("markdown import: %d %v", n, err)
+	}
+	mixed, err := two.Messages(ctx, alice2, 0, true)
+	if err != nil || len(mixed) != 2 || mixed[0].ID <= id || mixed[0].ContentType != "text/markdown" || mixed[0].State != (State{}) || mixed[1] != aMessages[0] {
+		t.Fatalf("mixed inbox order, content type or state: %#v %v", mixed, err)
+	}
+	markdownID := mixed[0].ID
+	if _, err := one.PatchState(ctx, alice, markdownID, StatePatch{Hidden: ptr(true), Favorite: ptr(true), ExpectedVersion: ptr(uint64(0))}); err != nil {
+		t.Fatal(err)
+	}
+	for _, actor := range []Session{alice2, bob} {
+		message, err := two.Message(ctx, actor, markdownID)
+		wantState := State{}
+		if actor.Person.ID == aliceID {
+			wantState = State{Hidden: true, Favorite: true, Version: 1}
+		}
+		if err != nil || message.ContentType != "text/markdown" || message.Body != imported.Body || message.State != wantState {
+			t.Fatalf("imported detail and personal state: %#v %v", message, err)
+		}
+	}
+	visible, err := one.Messages(ctx, alice2, 0, false)
+	if err != nil || len(visible) != 0 {
+		t.Fatalf("hidden filter changed: %#v %v", visible, err)
+	}
+	older, err := two.Messages(ctx, alice2, markdownID, true)
+	if err != nil || len(older) != 1 || older[0] != aMessages[0] {
+		t.Fatalf("before cursor changed: %#v %v", older, err)
+	}
+	bobInbox, err := one.Messages(ctx, bob, 0, false)
+	if err != nil || len(bobInbox) != 2 || bobInbox[0].ContentType != "text/markdown" || bobInbox[0].State != (State{}) || bobInbox[1] != bMessages[0] {
+		t.Fatalf("imported inbox personal isolation: %#v %v", bobInbox, err)
+	}
+	if _, err := one.Message(ctx, admin, markdownID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("administrator bypassed import membership: %v", err)
 	}
 	if _, err := two.PatchState(ctx, alice2, id, StatePatch{Read: ptr(false), ExpectedVersion: ptr(uint64(0))}); !errors.Is(err, ErrConflict) {
 		t.Fatal("stale device update accepted")
 	}
 	if err := one.Membership(ctx, admin, topic, bobID, false); err != nil {
 		t.Fatal(err)
+	}
+	for _, messageID := range []uint64{id, markdownID} {
+		if _, err := two.Message(ctx, bob, messageID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("revoked membership still allowed detail: %v", err)
+		}
+	}
+	if messages, err := two.Messages(ctx, bob, 0, true); err != nil || len(messages) != 0 {
+		t.Fatalf("revoked membership still allowed inbox: %#v %v", messages, err)
 	}
 	if _, err := two.PatchState(ctx, bob, id, StatePatch{Read: ptr(true), ExpectedVersion: ptr(uint64(0))}); !errors.Is(err, ErrNotFound) {
 		t.Fatal("revoked membership still allowed mutation")

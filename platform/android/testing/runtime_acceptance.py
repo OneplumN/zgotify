@@ -34,7 +34,9 @@ class Fixture:
     def message(self, person, message):
         return {"id": message, "topic_id": 7,
                 "title": "CPU alert" if message == 42 else "Database alert",
-                "message": "Synthetic offline acceptance message. No production data.",
+                "message": ("## CPU warning\n\n**High load**\n\n| Host | Value |\n| --- | --- |\n| fixture-only | 5.2 |\n\n[Open monitor](https://example.com/alert/42)"
+                            if message == 42 else "**Literal asterisks** remain plain. Synthetic data only."),
+                "content_type": "text/markdown" if message == 42 else "text/plain",
                 "priority": 9, "created_at": "2026-11-12T04:00:00Z",
                 "state": copy.deepcopy(self.state(person, message))}
 
@@ -168,6 +170,11 @@ class Device:
         self.click("操作")
         self.click(value)
 
+    def row_text(self, title):
+        rows = self.wait(lambda n: any(child.get("resource-id", "").endswith("/message_title")
+                                       and child.get("text") == title for child in n))
+        return " ".join(child.get("text", "") for child in rows[0].iter("node"))
+
     def screenshot(self, name):
         (self.output / f"{name}.png").write_bytes(self.adb("exec-out", "screencap", "-p"))
 
@@ -191,6 +198,9 @@ def run(args):
         device.restart()
         device.login("alice", args.port)
         device.screenshot("01-online")
+        assert "**High load**" not in device.row_text("CPU alert")
+        assert "High load" in device.row_text("CPU alert")
+        assert "**Literal asterisks**" in device.row_text("Database alert")
         passed("Alice login and online inbox")
         fixture.offline = True
         device.refresh()
@@ -199,7 +209,7 @@ def run(args):
         device.text("离线缓存 · 2 条 · 待同步 1")
         device.restart()
         device.text("离线缓存 · 2 条 · 待同步 1")
-        assert "已读" in device.text("CPU alert")[0].get("text")
+        assert "已读" in device.row_text("CPU alert")
         device.screenshot("02-offline-after-restart")
         passed("Cached content and queued read survive process force-stop and reopen")
         fixture.offline = False
@@ -209,7 +219,7 @@ def run(args):
         passed("Recovery submits one touched-field patch and acknowledges queue")
         device.menu("添加账号")
         device.login("bob", args.port)
-        assert "未读" in device.text("CPU alert")[0].get("text")
+        assert "未读" in device.row_text("CPU alert")
         device.menu("添加账号")
         device.click("取消")
         assert device.text("bob · http://127.0.0.1")
@@ -241,7 +251,7 @@ def run(args):
         passed("Hidden conflict remains reachable; explicit rebase preserves other-device favorite")
         device.menu("包含已隐藏消息")
         device.text("在线 · 2 条")
-        assert "已隐藏" in device.text("CPU alert")[0].get("text")
+        assert "已隐藏" in device.row_text("CPU alert")
         fixture.topics[1] = set()
         device.refresh()
         device.text("在线 · 0 条 · 待同步 0")
@@ -252,14 +262,25 @@ def run(args):
         device.click("注销")
         device.text("bob · http://127.0.0.1")
         device.text("在线 · 2 条")
-        assert "未读" in device.text("CPU alert")[0].get("text")
+        assert "未读" in device.row_text("CPU alert")
         device.screenshot("05-logout-preserves-bob")
         passed("Logout removes Alice locally and retains Bob account/cache")
+        device.adb("shell", "wm", "size", "720x1280")
+        device.adb("shell", "wm", "density", "320")
+        device.adb("shell", "settings", "put", "system", "font_scale", "1.3")
+        device.restart()
+        device.text("在线 · 2 条")
+        device.text("CPU alert", exact=True)
+        device.screenshot("06-narrow-large-text")
+        passed("360dp inbox renders at 1.3 font scale with released Markdown renderer")
         result = {"checks": checks, "passed": len(checks), "fixture_successful_patches": fixture.writes,
                   "scope": "Android emulator UI + loopback HTTP fixture; not ECS/MySQL/OEM push acceptance"}
         (output / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
         print(json.dumps(result, ensure_ascii=False), flush=True)
     finally:
+        device.adb("shell", "wm", "size", "reset")
+        device.adb("shell", "wm", "density", "reset")
+        device.adb("shell", "settings", "put", "system", "font_scale", "1.0")
         device.adb("reverse", "--remove", f"tcp:{args.port}")
         server.shutdown()
         server.server_close()

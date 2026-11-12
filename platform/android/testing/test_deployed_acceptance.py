@@ -152,6 +152,199 @@ class GuardTests(unittest.TestCase):
                 device.remove_reverse()
 
 
+class MessageRowTests(unittest.TestCase):
+    def setUp(self):
+        self.device = acceptance.Device("adb", "emulator-5580", Path("unused"))
+        self.device.authenticated = True
+
+    def released_row(self, title="Synthetic-1", flags="\u672a\u8bfb", body="Synthetic body",
+                     bounds="[0,100][400,200]"):
+        row = ET.Element("node", {"class": "android.widget.LinearLayout",
+                                  "clickable": "true", "bounds": bounds})
+        for name, text in (("message_title", title), ("message_state", flags),
+                           ("message_text", body)):
+            ET.SubElement(row, "node", {"class": "android.widget.TextView", "text": text,
+                                      "resource-id": self.device.package + ":id/" + name})
+        row[0].set("bounds", "[0,100][400,120]")
+        return row
+
+    def legacy_row(self, title="Synthetic-1", flags="\u672a\u8bfb"):
+        return ET.Element("node", {"class": "android.widget.TextView",
+                                   "text": title + "\n" + flags + "\nSynthetic body",
+                                   "bounds": "[0,100][400,200]"})
+
+    def screen(self, *rows, ready=True, login=False):
+        root = ET.Element("hierarchy")
+        ET.SubElement(root, "node", {"content-desc": "\u5237\u65b0",
+                                     "enabled": "true" if ready else "false"})
+        for row in rows:
+            root.append(row)
+        if login:
+            ET.SubElement(root, "node", {"text": "\u767b\u5f55 zgotify"})
+        return list(root.iter("node"))
+
+    def inspect(self, nodes, **expected):
+        with patch.object(self.device, "nodes", return_value=nodes), \
+                patch.object(acceptance.time, "monotonic", side_effect=[0, 1, 46]), \
+                patch.object(acceptance.time, "sleep"):
+            self.device.row("Synthetic-1", **expected)
+
+    def test_released_row_reads_separate_state_not_body(self):
+        self.inspect(self.screen(self.released_row(body="\u5df2\u8bfb \u00b7 \u5df2\u9690\u85cf \u00b7 \u5df2\u6536\u85cf \u00b7 \u5f85\u540c\u6b65")))
+        self.inspect(self.screen(self.released_row(flags="\u5df2\u8bfb \u00b7 \u5df2\u9690\u85cf \u00b7 \u5df2\u6536\u85cf \u00b7 \u5f85\u540c\u6b65")),
+                     read=True, hidden=True, favorite=True, pending=True)
+
+    def test_wrong_row_cannot_supply_expected_flags(self):
+        nodes = self.screen(self.released_row("Synthetic-2", "\u5df2\u8bfb \u00b7 \u5df2\u6536\u85cf"),
+                            self.released_row(flags="\u672a\u8bfb", body="\u5df2\u8bfb \u00b7 \u5df2\u6536\u85cf"))
+        with self.assertRaises(acceptance.Failure) as caught:
+            self.inspect(nodes, read=True, favorite=True)
+        self.assertEqual(str(caught.exception), "state_mismatch")
+
+    def test_recycled_extra_flags_are_not_ignored(self):
+        for flags in ("\u5df2\u8bfb", "\u672a\u8bfb \u00b7 \u5df2\u9690\u85cf", "\u672a\u8bfb \u00b7 \u5df2\u6536\u85cf", "\u672a\u8bfb \u00b7 \u5f85\u540c\u6b65",
+                      "\u672a\u8bfb \u00b7 \u540c\u6b65\u5f85\u5904\u7406", "\u5df2\u8bfb \u00b7 \u672a\u8bfb"):
+            with self.subTest(flags=flags), self.assertRaises(acceptance.Failure) as caught:
+                self.inspect(self.screen(self.released_row(flags=flags)))
+            self.assertEqual(str(caught.exception), "state_mismatch")
+
+    def test_recycled_row_is_resolved_from_each_current_snapshot(self):
+        reused = self.released_row(flags="\u5df2\u8bfb")
+        self.inspect(self.screen(reused), read=True)
+        reused[0].set("text", "Synthetic-2")
+        current = self.released_row(flags="\u672a\u8bfb", bounds="[0,200][400,300]")
+        with self.assertRaises(acceptance.Failure) as caught:
+            self.inspect(self.screen(reused, current), read=True)
+        self.assertEqual(str(caught.exception), "state_mismatch")
+        self.inspect(self.screen(reused, current))
+
+    def test_missing_nested_or_duplicate_state_cannot_borrow_sibling_flags(self):
+        for shape in ("missing", "nested", "duplicate"):
+            row = self.released_row()
+            state = row[1]
+            if shape == "duplicate":
+                ET.SubElement(row, "node", dict(state.attrib))
+            else:
+                row.remove(state)
+                if shape == "nested":
+                    ET.SubElement(row, "node").append(state)
+            with self.subTest(shape=shape), self.assertRaises(acceptance.Failure) as caught:
+                self.inspect(self.screen(row, self.released_row("Synthetic-2")))
+            self.assertEqual(str(caught.exception), "ui_shape")
+
+    def test_released_title_must_match_exactly_not_another_row_body(self):
+        for title in ("prefix Synthetic-1", "Synthetic-10", "Synthetic-2"):
+            row = self.released_row(title, body="Synthetic-1\n\u672a\u8bfb")
+            with self.subTest(title=title), self.assertRaises(acceptance.Failure) as caught:
+                self.inspect(self.screen(row))
+            self.assertEqual(str(caught.exception), "ui_timeout")
+
+    def test_duplicate_matching_rows_fail_closed(self):
+        for make_row in (self.released_row, self.legacy_row):
+            with self.subTest(layout=make_row.__name__), self.assertRaises(acceptance.Failure) as caught:
+                self.inspect(self.screen(make_row(), make_row()))
+            self.assertEqual(str(caught.exception), "ui_shape")
+
+    def test_legacy_02_combined_row_keeps_state_checks(self):
+        self.inspect(self.screen(self.legacy_row()))
+        self.inspect(self.screen(self.legacy_row(flags="\u5df2\u8bfb \u00b7 \u5df2\u6536\u85cf \u00b7 \u5f85\u540c\u6b65")),
+                     read=True, favorite=True, pending=True)
+        with self.assertRaises(acceptance.Failure) as caught:
+            self.inspect(self.screen(self.legacy_row(flags="\u672a\u8bfb \u00b7 \u5df2\u9690\u85cf")))
+        self.assertEqual(str(caught.exception), "state_mismatch")
+
+    def test_legacy_02_title_must_be_the_exact_first_line(self):
+        for title in ("prefix Synthetic-1", "Synthetic-10"):
+            with self.subTest(title=title), self.assertRaises(acceptance.Failure) as caught:
+                self.inspect(self.screen(self.legacy_row(title)))
+            self.assertEqual(str(caught.exception), "ui_timeout")
+
+    def test_operation_taps_selected_title_not_message_body_in_both_layouts(self):
+        for make_row in (self.released_row, self.legacy_row):
+            with self.subTest(layout=make_row.__name__):
+                other = make_row("Synthetic-2")
+                other.set("bounds", "[0,200][400,300]")
+                if len(other):
+                    other[0].set("bounds", "[0,200][400,220]")
+                screens = [self.screen(other, make_row()),
+                           [ET.Element("node", {"text": "\u64cd\u4f5c", "bounds": "[0,400][200,500]"})],
+                           [ET.Element("node", {"text": "\u6536\u85cf", "bounds": "[0,500][200,600]"})]]
+                def advance(*args):
+                    screens.pop(0)
+                with patch.object(self.device, "nodes", side_effect=lambda: screens[0]), \
+                        patch.object(self.device, "adb", side_effect=advance) as adb:
+                    self.device.operation("Synthetic-1", "\u6536\u85cf")
+                title_y = "110" if make_row == self.released_row else "150"
+                self.assertEqual(adb.call_args_list, [call("shell", "input", "tap", "200", title_y),
+                                                      call("shell", "input", "tap", "100", "450"),
+                                                      call("shell", "input", "tap", "100", "550")])
+
+    def test_row_requires_authenticated_current_screen(self):
+        self.device.authenticated = False
+        with self.assertRaises(acceptance.Failure) as caught:
+            self.inspect(self.screen(self.released_row()))
+        self.assertEqual(str(caught.exception), "identity_mismatch")
+        self.device.authenticated = True
+        for nodes in (self.screen(self.released_row(), ready=False),
+                      self.screen(self.released_row(), login=True),
+                      self.screen(self.released_row(), ET.Element("node", {"password": "true"})),
+                      self.screen(self.released_row(), ET.Element("node", {"class": "android.widget.EditText"}))):
+            with self.subTest(nodes=nodes), self.assertRaises(acceptance.Failure) as caught:
+                self.inspect(nodes)
+            self.assertEqual(str(caught.exception), "ui_timeout")
+
+    def test_operation_cannot_tap_stale_rows_under_login(self):
+        with patch.object(self.device, "nodes", return_value=self.screen(self.released_row(), login=True)), \
+                patch.object(acceptance.time, "monotonic", side_effect=[0, 1, 46]), \
+                patch.object(acceptance.time, "sleep"), patch.object(self.device, "adb") as adb, \
+                self.assertRaises(acceptance.Failure) as caught:
+            self.device.operation("Synthetic-1", "\u6536\u85cf")
+        self.assertEqual(str(caught.exception), "ui_timeout")
+        adb.assert_not_called()
+
+    def test_absent_still_detects_both_layouts(self):
+        for make_row in (self.released_row, self.legacy_row):
+            with self.subTest(layout=make_row.__name__), \
+                    patch.object(self.device, "nodes", return_value=self.screen(make_row())):
+                with self.assertRaises(acceptance.Failure) as caught:
+                    self.device.absent(["Synthetic-1"])
+                self.assertEqual(str(caught.exception), "message_mismatch")
+                self.device.absent(["Synthetic-2"])
+
+    def test_screenshot_does_not_trust_rows_under_login(self):
+        with patch.object(self.device, "nodes", return_value=self.screen(self.released_row(), login=True)), \
+                patch.object(self.device, "adb") as adb:
+            self.assertFalse(self.device.screenshot("alice_same_person_two_devices"))
+        adb.assert_not_called()
+
+    def test_inbox_still_requires_exact_count_and_ready_screen(self):
+        status = ET.Element("node", {"text": "\u5728\u7ebf \u00b7 2 \u6761 \u00b7 \u5f85\u540c\u6b65 0 \u00b7 \u5f85\u5904\u7406 0"})
+        with patch.object(self.device, "nodes", return_value=self.screen(self.released_row(), status)):
+            self.device.inbox(2)
+        for count, ready in ((1, True), (2, False)):
+            with self.subTest(count=count, ready=ready), \
+                    patch.object(self.device, "nodes", return_value=self.screen(self.released_row(), status, ready=ready)), \
+                    patch.object(acceptance.time, "monotonic", side_effect=[0, 1, 46]), \
+                    patch.object(acceptance.time, "sleep"), self.assertRaises(acceptance.Failure) as caught:
+                self.device.inbox(count)
+            self.assertEqual(str(caught.exception), "ui_timeout")
+
+    def test_row_cannot_replace_active_identity_check(self):
+        account = acceptance.Account("alice", "test-alice", "test-only-password", person_id=101)
+        profiles = [{"server": acceptance.ORIGIN, "username": account.username, "person_id": 101}]
+        for active in (acceptance.ORIGIN + "|test-bob", acceptance.ORIGIN + "|test-alice"):
+            preferences = ET.Element("map")
+            ET.SubElement(preferences, "string", {"name": "profiles"}).text = json.dumps(profiles)
+            ET.SubElement(preferences, "string", {"name": "active"}).text = active
+            with self.subTest(active=active), \
+                    patch.object(self.device, "profile_xml", return_value=ET.tostring(preferences)), \
+                    patch.object(self.device, "nodes", return_value=self.screen(self.released_row())), \
+                    patch.object(acceptance.time, "monotonic", side_effect=[0, 1, 46]), \
+                    patch.object(acceptance.time, "sleep"), self.assertRaises(acceptance.Failure) as caught:
+                self.device.active_identity(account)
+            self.assertEqual(str(caught.exception), "identity_mismatch" if active.endswith("test-bob") else "ui_timeout")
+
+
 class StdinTests(unittest.TestCase):
     def test_secret_pipe_is_read_without_logging(self):
         read_fd, write_fd = os.pipe()

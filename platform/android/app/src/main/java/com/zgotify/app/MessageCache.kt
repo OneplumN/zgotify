@@ -15,6 +15,7 @@ data class InboxMessage(
     val priority: Int,
     val createdAt: String,
     val state: PersonalState,
+    val contentType: String = "text/plain",
 )
 
 data class PendingState(

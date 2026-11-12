@@ -6,7 +6,7 @@
         android:theme="@style/AppTheme"
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
-        android:icon="@android:drawable/ic_dialog_email">
+        android:icon="@drawable/gotify">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 )
 
@@ -120,20 +121,24 @@ WHERE mb.person_id=? ORDER BY t.id`, actor.Person.ID)
 
 func (s *Store) Message(ctx context.Context, actor Session, id uint64) (Message, error) {
 	var out Message
+	var payload []byte
 	err := s.DB.QueryRowContext(ctx, `SELECT m.id,m.topic_id,m.title,m.body,m.priority,m.created_at,
-COALESCE(st.is_read,FALSE),COALESCE(st.is_hidden,FALSE),COALESCE(st.is_favorite,FALSE),COALESCE(st.version,0)
+COALESCE(st.is_read,FALSE),COALESCE(st.is_hidden,FALSE),COALESCE(st.is_favorite,FALSE),COALESCE(st.version,0),g.payload
 FROM messages m JOIN memberships mb ON mb.topic_id=m.topic_id AND mb.person_id=?
 LEFT JOIN message_states st ON st.message_id=m.id AND st.person_id=?
+LEFT JOIN gotify_import_metadata g ON g.message_id=m.id
 WHERE m.id=?`, actor.Person.ID, actor.Person.ID, id).
-		Scan(&out.ID, &out.TopicID, &out.Title, &out.Body, &out.Priority, &out.CreatedAt, &out.State.Read, &out.State.Hidden, &out.State.Favorite, &out.State.Version)
+		Scan(&out.ID, &out.TopicID, &out.Title, &out.Body, &out.Priority, &out.CreatedAt, &out.State.Read, &out.State.Hidden, &out.State.Favorite, &out.State.Version, &payload)
+	out.ContentType = messageContentType(payload)
 	return out, mapDatabaseError(err)
 }
 
 func (s *Store) Messages(ctx context.Context, actor Session, before uint64, includeHidden bool) ([]Message, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT m.id,m.topic_id,m.title,m.body,m.priority,m.created_at,
-COALESCE(st.is_read,FALSE),COALESCE(st.is_hidden,FALSE),COALESCE(st.is_favorite,FALSE),COALESCE(st.version,0)
+COALESCE(st.is_read,FALSE),COALESCE(st.is_hidden,FALSE),COALESCE(st.is_favorite,FALSE),COALESCE(st.version,0),g.payload
 FROM messages m JOIN memberships mb ON mb.topic_id=m.topic_id AND mb.person_id=?
 LEFT JOIN message_states st ON st.message_id=m.id AND st.person_id=?
+LEFT JOIN gotify_import_metadata g ON g.message_id=m.id
 WHERE (?=0 OR m.id<?) AND (? OR COALESCE(st.is_hidden,FALSE)=FALSE)
 ORDER BY m.id DESC LIMIT 100`, actor.Person.ID, actor.Person.ID, before, before, includeHidden)
 	if err != nil {
@@ -143,12 +148,30 @@ ORDER BY m.id DESC LIMIT 100`, actor.Person.ID, actor.Person.ID, before, before,
 	out := make([]Message, 0)
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.TopicID, &m.Title, &m.Body, &m.Priority, &m.CreatedAt, &m.State.Read, &m.State.Hidden, &m.State.Favorite, &m.State.Version); err != nil {
+		var payload []byte
+		if err := rows.Scan(&m.ID, &m.TopicID, &m.Title, &m.Body, &m.Priority, &m.CreatedAt, &m.State.Read, &m.State.Hidden, &m.State.Favorite, &m.State.Version, &payload); err != nil {
 			return nil, err
 		}
+		m.ContentType = messageContentType(payload)
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+func messageContentType(payload []byte) string {
+	// Map lookups keep the metadata keys case-sensitive; unrelated values stay private.
+	for _, key := range []string{"extras", "client::display", "contentType"} {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &object); err != nil {
+			return "text/plain"
+		}
+		payload = object[key]
+	}
+	var contentType string
+	if err := json.Unmarshal(payload, &contentType); err == nil && contentType == "text/markdown" {
+		return "text/markdown"
+	}
+	return "text/plain"
 }
 
 func (s *Store) PatchState(ctx context.Context, actor Session, id uint64, patch StatePatch) (State, error) {

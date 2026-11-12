@@ -21,10 +21,19 @@ JOIN memberships mb ON mb.topic_id=t.id
 WHERE mb.person_id=? ORDER BY t.id`
 
 const messageReadSQL = `SELECT m.id,m.topic_id,m.title,m.body,m.priority,m.created_at,
-COALESCE(st.is_read,FALSE),COALESCE(st.is_hidden,FALSE),COALESCE(st.is_favorite,FALSE),COALESCE(st.version,0)
+COALESCE(st.is_read,FALSE),COALESCE(st.is_hidden,FALSE),COALESCE(st.is_favorite,FALSE),COALESCE(st.version,0),g.payload
 FROM messages m JOIN memberships mb ON mb.topic_id=m.topic_id AND mb.person_id=?
 LEFT JOIN message_states st ON st.message_id=m.id AND st.person_id=?
+LEFT JOIN gotify_import_metadata g ON g.message_id=m.id
 WHERE m.id=?`
+
+const messagesReadSQL = `SELECT m.id,m.topic_id,m.title,m.body,m.priority,m.created_at,
+COALESCE(st.is_read,FALSE),COALESCE(st.is_hidden,FALSE),COALESCE(st.is_favorite,FALSE),COALESCE(st.version,0),g.payload
+FROM messages m JOIN memberships mb ON mb.topic_id=m.topic_id AND mb.person_id=?
+LEFT JOIN message_states st ON st.message_id=m.id AND st.person_id=?
+LEFT JOIN gotify_import_metadata g ON g.message_id=m.id
+WHERE (?=0 OR m.id<?) AND (? OR COALESCE(st.is_hidden,FALSE)=FALSE)
+ORDER BY m.id DESC LIMIT 100`
 
 func expectReadSession(m sqlmock.Sqlmock, token string, person uint64, admin bool) {
 	m.ExpectQuery(regexp.QuoteMeta(`SELECT p.id,p.username,p.display_name,p.is_admin,s.device_name
@@ -63,7 +72,7 @@ func assertReadJSON(t *testing.T, w *httptest.ResponseRecorder, status int, want
 }
 
 func readMessageRows() *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"id", "topic_id", "title", "body", "priority", "created_at", "read", "hidden", "favorite", "version"})
+	return sqlmock.NewRows([]string{"id", "topic_id", "title", "body", "priority", "created_at", "read", "hidden", "favorite", "version", "payload"})
 }
 
 func TestReadTopicsOnlyPersonalMemberships(t *testing.T) {
@@ -116,16 +125,16 @@ func TestReadMessageUsesOwnStateIncludingHiddenAndInboxShape(t *testing.T) {
 			token := strings.Repeat("a", 64)
 			created := time.Date(2026, 11, 12, 1, 2, 3, 456000000, time.UTC)
 			rows := func() *sqlmock.Rows {
-				return readMessageRows().AddRow(42, 3, "CPU alert", "High load", 8, created, tc.state.Read, tc.state.Hidden, tc.state.Favorite, tc.state.Version)
+				return readMessageRows().AddRow(42, 3, "CPU alert", "High load", 8, created, tc.state.Read, tc.state.Hidden, tc.state.Favorite, tc.state.Version, nil)
 			}
 			expectReadSession(m, token, tc.person, tc.admin)
 			m.ExpectQuery("^"+regexp.QuoteMeta(messageReadSQL)+"$").WithArgs(tc.person, tc.person, uint64(42)).WillReturnRows(rows()).RowsWillBeClosed()
 			h := (&API{Store: store}).Handler()
 			w := readEndpoint(h, "/v1/messages/42?include_hidden=false&person_id=99&topic_id=99&before=1", "Bearer "+token)
-			wantMessage := `{"id":42,"topic_id":3,"title":"CPU alert","message":"High load","priority":8,"created_at":"2026-11-12T01:02:03.456Z","state":` + tc.want + `}`
+			wantMessage := `{"id":42,"topic_id":3,"title":"CPU alert","message":"High load","content_type":"text/plain","priority":8,"created_at":"2026-11-12T01:02:03.456Z","state":` + tc.want + `}`
 			assertReadJSON(t, w, 200, `{"message":`+wantMessage+`}`)
 			expectReadSession(m, token, tc.person, tc.admin)
-			m.ExpectQuery("SELECT m.id,m.topic_id").WithArgs(tc.person, tc.person, uint64(0), uint64(0), true).WillReturnRows(rows())
+			m.ExpectQuery("^"+regexp.QuoteMeta(messagesReadSQL)+"$").WithArgs(tc.person, tc.person, uint64(0), uint64(0), true).WillReturnRows(rows())
 			w = readEndpoint(h, "/v1/messages?include_hidden=true", "Bearer "+token)
 			assertReadJSON(t, w, 200, `{"messages":[`+wantMessage+`]}`)
 		})
@@ -134,7 +143,7 @@ func TestReadMessageUsesOwnStateIncludingHiddenAndInboxShape(t *testing.T) {
 
 func TestReadEndpointsRequirePersonalSession(t *testing.T) {
 	token := strings.Repeat("a", 64)
-	for _, target := range []string{"/v1/topics", "/v1/messages/42", "/v1/messages/bad-id"} {
+	for _, target := range []string{"/v1/topics", "/v1/messages", "/v1/messages/42", "/v1/messages/bad-id"} {
 		for _, tc := range []struct {
 			name, header, query string
 			lookup              bool
@@ -205,10 +214,19 @@ func TestReadEndpointsDatabaseErrorsAreSanitized(t *testing.T) {
 			m.ExpectQuery(regexp.QuoteMeta(messageReadSQL)).WithArgs(uint64(11), uint64(11), uint64(42)).WillReturnError(errors.New("private database detail"))
 		}},
 		{"message scan", "/v1/messages/42", func(m sqlmock.Sqlmock) {
-			m.ExpectQuery(regexp.QuoteMeta(messageReadSQL)).WithArgs(uint64(11), uint64(11), uint64(42)).WillReturnRows(readMessageRows().AddRow(42, 3, "Title", "Body", 8, "bad-date", false, false, false, 0)).RowsWillBeClosed()
+			m.ExpectQuery(regexp.QuoteMeta(messageReadSQL)).WithArgs(uint64(11), uint64(11), uint64(42)).WillReturnRows(readMessageRows().AddRow(42, 3, "Title", "Body", 8, "bad-date", false, false, false, 0, nil)).RowsWillBeClosed()
 		}},
 		{"message row", "/v1/messages/42", func(m sqlmock.Sqlmock) {
-			m.ExpectQuery(regexp.QuoteMeta(messageReadSQL)).WithArgs(uint64(11), uint64(11), uint64(42)).WillReturnRows(readMessageRows().AddRow(42, 3, "Title", "Body", 8, time.Now(), false, false, false, 0).RowError(0, errors.New("private row error"))).RowsWillBeClosed()
+			m.ExpectQuery(regexp.QuoteMeta(messageReadSQL)).WithArgs(uint64(11), uint64(11), uint64(42)).WillReturnRows(readMessageRows().AddRow(42, 3, "Title", "Body", 8, time.Now(), false, false, false, 0, nil).RowError(0, errors.New("private row error"))).RowsWillBeClosed()
+		}},
+		{"messages query", "/v1/messages", func(m sqlmock.Sqlmock) {
+			m.ExpectQuery(regexp.QuoteMeta(messagesReadSQL)).WithArgs(uint64(11), uint64(11), uint64(0), uint64(0), false).WillReturnError(errors.New("private database detail"))
+		}},
+		{"messages scan", "/v1/messages", func(m sqlmock.Sqlmock) {
+			m.ExpectQuery(regexp.QuoteMeta(messagesReadSQL)).WithArgs(uint64(11), uint64(11), uint64(0), uint64(0), false).WillReturnRows(readMessageRows().AddRow(42, 3, "Title", "Body", 8, "bad-date", false, false, false, 0, nil)).RowsWillBeClosed()
+		}},
+		{"messages iteration", "/v1/messages", func(m sqlmock.Sqlmock) {
+			m.ExpectQuery(regexp.QuoteMeta(messagesReadSQL)).WithArgs(uint64(11), uint64(11), uint64(0), uint64(0), false).WillReturnRows(readMessageRows().AddRow(42, 3, "Title", "Body", 8, time.Now(), false, false, false, 0, nil).AddRow(41, 3, "Title", "Body", 8, time.Now(), false, false, false, 0, nil).RowError(1, errors.New("private row error"))).RowsWillBeClosed()
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

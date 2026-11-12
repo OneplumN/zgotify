@@ -8,6 +8,8 @@ The original Android client and release workflows remain at the repository root.
 ## Boundaries
 
 - Synchronize reviewed source, dependency locks, tests and sanitized documentation.
+- Reused bundled image assets and the original MIT notice are included with
+  explicit provenance; APKs and external server images are not source inputs.
 - The local `.github/workflows/platform-ci.yml` maps to the repository-root path
   of the same name, not to `platform/.github/`.
 - Do not include artifacts, Gradle caches, local SDK paths, credentials, fixture
