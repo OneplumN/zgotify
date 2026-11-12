@@ -39,10 +39,10 @@ jobs:
         run: go vet ./...
       - name: Python harness unit tests
         working-directory: platform/deploy/docker
-        run: python3 -B -m unittest -v test_verify_gotify_import.py
+        run: python3 -B -m unittest -v test_verify_gotify_import.py test_prepare_android_render.py
       - name: Deployed Android harness guard tests
         working-directory: platform/android/testing
-        run: python3 -B -m unittest -v test_deployed_acceptance.py
+        run: python3 -B -m unittest -v test_deployed_acceptance.py test_gotify_render_acceptance.py
   android:
     name: Independent Android debug checks
     runs-on: ubuntu-latest

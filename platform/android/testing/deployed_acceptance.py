@@ -289,7 +289,7 @@ class Device:
         require(len(matches) == 1 and active == ORIGIN + "|" + account.username, "identity_mismatch")
         self.text(account.username + " · " + ORIGIN)
 
-    def login(self, account, budget):
+    def login(self, account, budget, expected_inbox_count=2):
         self.authenticated = False
         self.text("登录 zgotify")
         for index, value in enumerate((ORIGIN, account.username, account.password)):
@@ -300,7 +300,7 @@ class Device:
             self.adb("shell", "-T", "sh", "-s", stdin=("input text " + shlex.quote(value) + "\n").encode())
         budget.claim(account.username)
         self.click("登录")
-        self.inbox(2)
+        self.inbox(expected_inbox_count)
         self.active_identity(account)
         self.authenticated = True
 

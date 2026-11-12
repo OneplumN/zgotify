@@ -66,9 +66,11 @@ The existing draft PR receives source only. No release tag, default-branch merge
 production deployment, ECS image replacement or database mutation is part of this
 increment. CI produces a separately signed debug artifact; its checksum can differ.
 
-The currently deployed older API does not yet supply `content_type`, so this app
-correctly falls back to plain text until the companion API update is separately
-deployed and verified. Existing personal-state endpoints remain compatible.
+At this UI increment's original verification, the deployed older API did not
+supply `content_type`, and the app fell back to plain text. The subsequent,
+separately scoped isolated API deployment and new Android 0.3 acceptance are
+recorded in `android-render-deployed-acceptance.md`. Existing personal-state
+endpoints remain compatible.
 Remote images/source icons, legacy settings/log migration, vendor push, physical
 phones, reliable background notification delivery and four-node acceptance remain
 unfinished. The earlier 0.2 deployed-device results are not claimed for this UI.

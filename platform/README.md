@@ -22,10 +22,16 @@ Gotify's database. Existing production Gotify/iGotify deployments stay unchanged
   with no errors and 13 warnings. Eight Android 36 emulator checks passed against
   a synthetic API fixture, including narrow layouts and account isolation.
   See `docs/android-released-ui-acceptance.md` for evidence and remaining limits.
+- Android 0.3 also passed eight checks against the updated isolated Go API/MySQL
+  using two disposable Android 36 emulators, including same-person sync,
+  different-person isolation, offline queue recovery and authorization revocation.
+  Fresh MySQL integration passed with the additive content-type checks.
+  A separate real Gotify 2.9.1 -> importer -> API -> Android run verified
+  Markdown and literal plain text; the fixture now contains 224 unique imports.
+  See `docs/android-render-deployed-acceptance.md` for this run and its limits.
 - The earlier Android 0.2 two-emulator run passed eight checks against the deployed Go API/MySQL,
   including same-person sync, different-person isolation, offline queue recovery
   and authorization revocation. See `docs/android-deployed-acceptance.md`.
-  These deployed results are not claimed for the 0.3 UI/API increment.
   Physical-phone and background delivery acceptance remain pending.
 - Docker test deployment is isolated from the old Gotify/iGotify projects and
   existing ECS websites. Database credentials are supplied through a secret file.

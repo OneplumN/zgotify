@@ -121,6 +121,9 @@ Files: isolated `android/` app; retain reference checkouts unchanged.
 - [x] M2 Room offline storage, durable state queue and 77 Android unit tests.
 - [x] M2 Android 36 emulator UI acceptance against an isolated API fixture (7 groups).
 - [x] M2 deployed Go API/MySQL and two-emulator verification (eight checks).
+- [x] M2 Android 0.3 released-UI reuse and updated test API: eight deployed checks
+  plus real Gotify Markdown/plain-text rendering acceptance; see
+  `../android-render-deployed-acceptance.md` for failed-run and verification limits.
 - [ ] M2 two-physical-device verification.
 - [x] Dedicated ECS inventory and authorized old-lab shutdown with data retained.
 - [x] Isolated Docker configuration and file-backed database secret support.
