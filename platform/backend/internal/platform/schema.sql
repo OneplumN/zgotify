@@ -1,0 +1,116 @@
+CREATE TABLE IF NOT EXISTS schema_versions (version INT PRIMARY KEY) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS people (
+ id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+ username VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,
+ display_name VARCHAR(128) NOT NULL,
+ password_hash VARBINARY(255) NOT NULL,
+ is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+ enabled BOOLEAN NOT NULL DEFAULT TRUE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS sessions (
+ token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+ person_id BIGINT UNSIGNED NOT NULL,
+ device_name VARCHAR(128) NOT NULL,
+ expires_at DATETIME(3) NOT NULL,
+ FOREIGN KEY(person_id) REFERENCES people(id),
+ INDEX sessions_person(person_id), INDEX sessions_expiry(expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+ username_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+ window_start DATETIME(3) NOT NULL,
+ attempts INT NOT NULL DEFAULT 1
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS topics (
+ id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+ name VARCHAR(128) NOT NULL,
+ ingest_token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS memberships (
+ topic_id BIGINT UNSIGNED NOT NULL,
+ person_id BIGINT UNSIGNED NOT NULL,
+ PRIMARY KEY(topic_id,person_id),
+ FOREIGN KEY(topic_id) REFERENCES topics(id),
+ FOREIGN KEY(person_id) REFERENCES people(id),
+ INDEX membership_person(person_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS messages (
+ id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+ topic_id BIGINT UNSIGNED NOT NULL,
+ external_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ title VARCHAR(512) NOT NULL,
+ body MEDIUMTEXT NOT NULL,
+ priority TINYINT UNSIGNED NOT NULL,
+ created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ FOREIGN KEY(topic_id) REFERENCES topics(id),
+ UNIQUE KEY message_source(topic_id,external_id),
+ INDEX message_topic(topic_id,id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS message_states (
+ person_id BIGINT UNSIGNED NOT NULL,
+ message_id BIGINT UNSIGNED NOT NULL,
+ is_read BOOLEAN NOT NULL DEFAULT FALSE,
+ is_hidden BOOLEAN NOT NULL DEFAULT FALSE,
+ is_favorite BOOLEAN NOT NULL DEFAULT FALSE,
+ version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ PRIMARY KEY(person_id,message_id),
+ FOREIGN KEY(person_id) REFERENCES people(id),
+ FOREIGN KEY(message_id) REFERENCES messages(id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS audit_events (
+ id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+ actor_id BIGINT UNSIGNED NOT NULL,
+ device_name VARCHAR(128) NOT NULL,
+ action VARCHAR(64) NOT NULL,
+ object_id BIGINT UNSIGNED NOT NULL,
+ detail JSON NOT NULL,
+ created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ FOREIGN KEY(actor_id) REFERENCES people(id),
+ INDEX audit_actor(actor_id,id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS delivery_outbox (
+ id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+ message_id BIGINT UNSIGNED NOT NULL UNIQUE,
+ status VARCHAR(16) NOT NULL DEFAULT 'pending',
+ attempts INT NOT NULL DEFAULT 0,
+ available_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ FOREIGN KEY(message_id) REFERENCES messages(id),
+ INDEX outbox_pending(status,available_at)
+) ENGINE=InnoDB;
+
+INSERT IGNORE INTO schema_versions(version) VALUES(1);
+
+CREATE TABLE IF NOT EXISTS gotify_sources (
+ source_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+ topic_id BIGINT UNSIGNED NOT NULL,
+ identity CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ scan_before BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ lease_owner CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+ lease_fence BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ lease_until DATETIME(3) NULL,
+ last_success_at DATETIME(3) NULL,
+ last_scan_completed_at DATETIME(3) NULL,
+ FOREIGN KEY(topic_id) REFERENCES topics(id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS gotify_import_metadata (
+ source_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ upstream_id BIGINT UNSIGNED NOT NULL,
+ message_id BIGINT UNSIGNED NOT NULL UNIQUE,
+ payload JSON NOT NULL,
+ payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ PRIMARY KEY(source_key,upstream_id),
+ FOREIGN KEY(source_key) REFERENCES gotify_sources(source_key),
+ FOREIGN KEY(message_id) REFERENCES messages(id)
+) ENGINE=InnoDB;
+
+INSERT IGNORE INTO schema_versions(version) VALUES(2);

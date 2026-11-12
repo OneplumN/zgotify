@@ -1,0 +1,55 @@
+services:
+  gotify-fixture:
+    image: ${ZGOTIFY_FIXTURE_IMAGE:?Set the verified local Gotify image ID}
+    pull_policy: never
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      - "127.0.0.1:18091:80"
+    volumes:
+      - gotify_fixture_data:/app/data
+      - ./secrets/gotify_fixture_config.json:/app/config.yml:ro
+    networks: [default]
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  importer:
+    profiles: ["import"]
+    image: ${ZGOTIFY_PLATFORM_IMAGE:-zgotify-internal:0.1.0-test}
+    command: ["-command", "import", "-sources", "/run/secrets/gotify_sources.json"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 192m
+    cpus: 0.5
+    pids_limit: 64
+    environment:
+      ZGOTIFY_MYSQL_DSN_FILE: /run/secrets/mysql_dsn
+      GOMEMLIMIT: 128MiB
+      GOMAXPROCS: "1"
+    secrets:
+      - mysql_dsn
+      - gotify_client_token
+      - source: gotify_sources
+        target: gotify_sources.json
+    networks: [default, database]
+    depends_on:
+      database:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+secrets:
+  gotify_client_token:
+    file: ./secrets/gotify_client_token
+  gotify_sources:
+    file: ./secrets/gotify_sources.json
+
+volumes:
+  gotify_fixture_data:

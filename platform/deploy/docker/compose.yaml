@@ -1,0 +1,33 @@
+name: zgotify-internal
+
+services:
+  api:
+    image: ${ZGOTIFY_PLATFORM_IMAGE:-zgotify-internal:0.1.0-test}
+    build:
+      context: ./image
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 192m
+    cpus: 0.5
+    ports:
+      - "127.0.0.1:18090:8090"
+    environment:
+      ZGOTIFY_MYSQL_DSN_FILE: /run/secrets/mysql_dsn
+      GOMEMLIMIT: 128MiB
+      GOMAXPROCS: "1"
+    secrets:
+      - mysql_dsn
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  mysql_dsn:
+    file: ./secrets/mysql_dsn

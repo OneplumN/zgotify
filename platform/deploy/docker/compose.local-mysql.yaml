@@ -1,0 +1,120 @@
+services:
+  api:
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - default
+      - database
+
+  database:
+    image: ${ZGOTIFY_MYSQL_IMAGE:?Set the verified local MySQL image ID}
+    pull_policy: never
+    restart: unless-stopped
+    mem_limit: 640m
+    cpus: 1.0
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MYSQL_DATABASE: zgotify_internal
+      MYSQL_USER: zgotify_app
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_app_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+      MYSQL_ROOT_HOST: localhost
+      MYSQL_INITDB_SKIP_TZINFO: "1"
+    command:
+      - --innodb-buffer-pool-size=128M
+      - --innodb-redo-log-capacity=64M
+      - --max-connections=40
+      - --table-open-cache=200
+      - --table-definition-cache=400
+      - --temptable-max-ram=32M
+      - --performance-schema=OFF
+      - --mysqlx=OFF
+      - --skip-log-bin
+    volumes:
+      - mysql_test_data:/var/lib/mysql
+      - ./secrets/init.sql:/docker-entrypoint-initdb.d/10-zgotify-test.sql:ro
+    secrets:
+      - mysql_root_password
+      - mysql_app_password
+      - mysql_admin_cnf
+    networks:
+      - database
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 --silent >/dev/null 2>&1 && mysql --defaults-extra-file=/run/secrets/mysql_admin_cnf --protocol=SOCKET --connect-timeout=2 zgotify_test_store_v1 -e 'SELECT 1' >/dev/null
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  migrate:
+    profiles: ["tools"]
+    image: ${ZGOTIFY_PLATFORM_IMAGE:-zgotify-internal:0.1.0-test}
+    command: ["-command", "migrate"]
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    pids_limit: 64
+    environment:
+      ZGOTIFY_MYSQL_DSN_FILE: /run/secrets/mysql_migration_dsn
+    secrets:
+      - mysql_migration_dsn
+    networks:
+      - database
+    depends_on:
+      database:
+        condition: service_healthy
+
+  integration:
+    profiles: ["tools"]
+    image: ${ZGOTIFY_PLATFORM_IMAGE:-zgotify-internal:0.1.0-test}
+    entrypoint: ["/tests/platform-mysql.test"]
+    command: ["-test.v", "-test.run", "^TestMySQLTwoPeopleTwoDevices$", "-test.timeout", "60s"]
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 192m
+    pids_limit: 64
+    environment:
+      ZGOTIFY_TEST_MYSQL_DSN_FILE: /run/secrets/mysql_test_dsn
+      GOMAXPROCS: "1"
+    secrets:
+      - mysql_test_dsn
+    volumes:
+      - ./tests/platform-mysql.test:/tests/platform-mysql.test:ro
+    networks:
+      - database
+    depends_on:
+      database:
+        condition: service_healthy
+
+secrets:
+  mysql_root_password:
+    file: ./secrets/mysql_root_password
+  mysql_app_password:
+    file: ./secrets/mysql_app_password
+  mysql_admin_cnf:
+    file: ./secrets/mysql_admin_cnf
+  mysql_migration_dsn:
+    file: ./secrets/mysql_migration_dsn
+  mysql_test_dsn:
+    file: ./secrets/mysql_test_dsn
+
+volumes:
+  mysql_test_data:
+
+networks:
+  database:
+    internal: true
