@@ -1,0 +1,65 @@
+name: Independent Platform
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'platform/**'
+      - '.github/workflows/platform-ci.yml'
+  push:
+    branches:
+      - feature/independent-platform
+    paths:
+      - 'platform/**'
+      - '.github/workflows/platform-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: independent-platform-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend and harness tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: platform/backend/go.mod
+          cache-dependency-path: platform/backend/go.sum
+      - name: Go race tests
+        working-directory: platform/backend
+        run: go test -race -count=1 ./...
+      - name: Go vet
+        working-directory: platform/backend
+        run: go vet ./...
+      - name: Python harness unit tests
+        working-directory: platform/deploy/docker
+        run: python3 -B -m unittest -v test_verify_gotify_import.py test_prepare_android_render.py
+      - name: Deployed Android harness guard tests
+        working-directory: platform/android/testing
+        run: python3 -B -m unittest -v test_deployed_acceptance.py test_gotify_render_acceptance.py
+  android:
+    name: Independent Android debug checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests, build and lint
+        working-directory: platform/android
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zgotify-independent-debug
+          path: platform/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 1

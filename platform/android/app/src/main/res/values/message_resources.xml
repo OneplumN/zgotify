@@ -1,0 +1,9 @@
+<resources>
+    <color name="hyperLink">#2760B0</color>
+    <color name="icons">#59616B</color>
+    <string name="message_image_desc">消息来源</string>
+    <string name="message_actions">消息操作</string>
+    <string name="empty_inbox">暂无消息</string>
+    <string name="message_copied">消息已复制</string>
+    <string name="open_message">打开消息详情</string>
+</resources>
