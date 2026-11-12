@@ -11,8 +11,11 @@ Internal implementation in progress. Not a production release.
 - Local Go race tests and vet pass. Real MySQL 8.4.13 integration passed on the
   isolated ECS, along with ten HTTP acceptance groups and a database/API restart
   check. RDS and multi-node acceptance are still pending.
-- The separate Android debug app builds and passes lint with no errors and four
-  warnings. No emulator or physical-device acceptance has been completed.
+- The separate Android 0.2 internal app has person-scoped Room storage, a durable
+  offline state queue, bounded foreground retries and explicit conflict handling.
+  All 77 Android unit tests pass; build/lint pass with no errors and seven warnings.
+  Seven Android 36 emulator UI workflows passed against a synthetic API fixture.
+  Physical-device and deployed-API acceptance remain separate from these checks.
 - Docker test deployment is isolated from the old Gotify/iGotify projects and
   existing ECS websites. Database credentials are supplied through a secret file.
 - The Gotify REST connector now implements protected source configuration,
@@ -21,8 +24,9 @@ Internal implementation in progress. Not a production release.
 - Real Gotify 2.9.1 acceptance imported 205 messages, caught up 17 while the worker
   was stopped, and verified 222 unique imports/outbox records after replay. The
   evidence and deployment boundary are in `docs/gotify-import-acceptance.md`.
-- Background push, Android offline storage and four-node failover remain
-  unimplemented or unverified. The debug APK does not solve background delivery yet.
+- Background push and four-node failover remain unimplemented or unverified.
+  The debug APK does not solve background delivery yet. Offline behavior and
+  emulator verification boundaries are documented in `docs/android-offline-acceptance.md`.
 
 ## Version 1 Scope
 

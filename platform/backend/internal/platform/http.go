@@ -61,6 +61,10 @@ func (a *API) Handler() http.Handler {
 		}
 		respond(w, map[string]bool{"reauthenticate": true}, a.Store.ChangePassword(r.Context(), s, in.Old, in.New))
 	}))
+	mux.HandleFunc("GET /v1/topics", a.auth(false, func(w http.ResponseWriter, r *http.Request, s Session) {
+		out, err := a.Store.Topics(r.Context(), s)
+		respond(w, map[string]any{"topics": out}, err)
+	}))
 	mux.HandleFunc("GET /v1/messages", a.auth(false, func(w http.ResponseWriter, r *http.Request, s Session) {
 		before, ok := page(w, r)
 		if !ok {
@@ -73,6 +77,14 @@ func (a *API) Handler() http.Handler {
 		}
 		out, err := a.Store.Messages(r.Context(), s, before, hidden == "true")
 		respond(w, map[string]any{"messages": out}, err)
+	}))
+	mux.HandleFunc("GET /v1/messages/{id}", a.auth(false, func(w http.ResponseWriter, r *http.Request, s Session) {
+		id, ok := pathID(w, r, "id")
+		if !ok {
+			return
+		}
+		out, err := a.Store.Message(r.Context(), s, id)
+		respond(w, map[string]any{"message": out}, err)
 	}))
 	mux.HandleFunc("PATCH /v1/messages/{id}/state", a.auth(false, func(w http.ResponseWriter, r *http.Request, s Session) {
 		id, ok := pathID(w, r, "id")

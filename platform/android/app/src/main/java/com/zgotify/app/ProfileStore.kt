@@ -45,7 +45,7 @@ class ProfileStore(context: Context) {
         return (0 until array.length()).map { index ->
             val item = array.getJSONObject(index)
             val token = try { decrypt(item.getString("token")) } catch (_: Exception) { "" }
-            Profile(item.getString("server"), item.getString("username"), token)
+            Profile(item.getString("server"), item.getString("username"), token, item.optLong("person_id", 0))
         }
     }
 
@@ -65,7 +65,8 @@ class ProfileStore(context: Context) {
 
     private fun persist(profiles: List<Profile>, active: String?) {
         val array = JSONArray()
-        profiles.forEach { array.put(JSONObject().put("server", it.server).put("username", it.username).put("token", encrypt(it.token))) }
+        profiles.forEach { array.put(JSONObject().put("server", it.server).put("username", it.username)
+            .put("person_id", it.personId).put("token", encrypt(it.token))) }
         check(prefs.edit().putString("profiles", array.toString()).putString("active", active).commit()) { "Could not persist account" }
     }
 }

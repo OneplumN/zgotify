@@ -114,8 +114,10 @@ Files: isolated `android/` app; retain reference checkouts unchanged.
 - [x] M1 backend implementation, local race tests and static checks.
 - [x] M1 real MySQL 8.4.13 integration on a dedicated test schema.
 - [ ] RDS-specific connectivity and integration acceptance.
-- [x] M2 Android internal APK build and lint (0 errors, 4 warnings).
-- [ ] M2 offline storage, runtime UI and two-device verification.
+- [x] M2 Android 0.2 internal APK build and lint (0 errors, 7 warnings).
+- [x] M2 Room offline storage, durable state queue and 77 Android unit tests.
+- [x] M2 Android 36 emulator UI acceptance against an isolated API fixture (7 groups).
+- [ ] M2 deployed-API and two-physical-device verification.
 - [x] Dedicated ECS inventory and authorized old-lab shutdown with data retained.
 - [x] Isolated Docker configuration and file-backed database secret support.
 - [x] Linux image build and isolated CLI execution on the authorized ECS.

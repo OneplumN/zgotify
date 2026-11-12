@@ -67,6 +67,11 @@ type StatePatch struct {
 	ExpectedVersion *uint64 `json:"expected_version"`
 }
 
+type Topic struct {
+	ID   uint64 `json:"id"`
+	Name string `json:"name"`
+}
+
 type Message struct {
 	ID        uint64    `json:"id"`
 	TopicID   uint64    `json:"topic_id"`

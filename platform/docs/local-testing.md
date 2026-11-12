@@ -49,7 +49,7 @@ Prerequisites: JDK 17, Android SDK platform 36, Gradle-wrapper dependencies.
 
 ```sh
 cd android
-./gradlew :app:assembleDebug :app:lintDebug
+./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
 ```
 
 The internal package is `com.zgotify.app.internal`, so it installs alongside the
@@ -63,10 +63,56 @@ for explicit local hosts in debug builds; other endpoints require HTTPS.
 Tokens are encrypted with an Android Keystore AES-GCM key. Passwords are not
 persisted. Account profiles are separate, adding an account can be cancelled, and
 stale in-flight UI responses are ignored after account changes. Foreground first-
-page refresh is every 15 seconds; manual refresh resets paging. There is no local
-message database or offline write queue yet. A failed write is never shown as
-success. Notification diagnostics include an explicit local test notification;
+page refresh is every 15 seconds; manual refresh resets paging. Room caches are
+partitioned by normalized server URL and authenticated numeric person ID. A
+durable queue stores only the personal fields changed locally. Pending edits are
+shown separately from acknowledged server state and survive process recreation.
+Notification diagnostics include an explicit local test notification;
 they do not imply that remote/background delivery has been implemented.
+
+### Offline Policy
+
+- Cached content is available for at most 24 hours since a successful `/me` and
+  complete `/topics` authorization check. Expiry hides content but retains queued
+  intent. Recheck on every Activity resume, including older pages.
+- A valid empty topics snapshot purges all cached messages and queued operations
+  for that person. Revoked topic data is removed before any queued PATCH. Offline
+  revocation is not instantaneous; app-private storage is not a remote wipe.
+- A current-session 401 purges that person's cache and requests reauthentication.
+  Stale requests from a replaced Activity/session cannot mutate the current cache.
+- Network/429/5xx failures retain intent, with 5-second exponential retry backoff
+  capped at 5 minutes. Retries run only during foreground/manual synchronization.
+- A 409 fetches current state. If the requested fields already match, acknowledge
+  the queue without another mutation (including a lost-success response). Otherwise
+  show a conflict. Only explicit user confirmation rebases the touched fields;
+  untouched fields on another device are preserved. A second conflict is possible.
+- A detail/PATCH 404 discards the inaccessible message and pending operation.
+  Other non-transient errors remain visible for explicit handling, not busy retry.
+- Cache retention is 1000 non-pending messages per person; pending messages are
+  protected. Online pagination is independent of this offline retention limit.
+- Tokens remain Keystore-encrypted. Passwords are not persisted. Message bodies
+  are in app-private Room storage, not encrypted by an app-specific database key.
+  Android backup is disabled. Do not describe this as end-to-end encryption.
+- Logout must revoke the server session before removing the local account. A
+  failed/offline logout does not claim successful remote revocation.
+
+### Disposable Emulator UI Check
+
+Use an empty dedicated Android 36 emulator, not a personal device. Install the
+internal debug APK, then run this loopback-only fixture (Python 3.9+):
+
+```sh
+adb -s emulator-5580 install -r app/build/outputs/apk/debug/app-debug.apk
+python3 testing/runtime_acceptance.py --adb "$ANDROID_HOME/platform-tools/adb" \
+  --serial emulator-5580 --output /tmp/zgotify-android-acceptance
+```
+
+The fixture uses synthetic Alice/Bob accounts, a temporary listener on
+127.0.0.1:18092 and an ADB reverse tunnel; it removes both at the end. It exercises real Android UI,
+Keystore and Room against a simulated API, including service-unavailable recovery,
+force-stop/reopen, account cancellation, state isolation, explicit conflicts,
+membership removal and logout. It does not test the Go/MySQL deployment or OEM
+background delivery. Begin each run with a fresh disposable app data set.
 
 ## Manual Core Workflow
 
@@ -85,7 +131,8 @@ they do not imply that remote/background delivery has been implemented.
 
 - RDS execution. Dedicated-container MySQL and real HTTP acceptance passed;
   see `local-mysql-acceptance.md` for scope and evidence.
-- Live Android UI/Keystore behavior without a connected emulator/device.
-- Background delivery, remote push SDKs, offline persistence and Gotify catch-up.
+- Physical-phone UI/Keystore behavior and two real devices against the deployed API.
+- Background delivery and remote push SDKs. REST Gotify catch-up is separately
+  accepted in `gotify-import-acceptance.md`, not by these Android tests.
 - Four-node worker failover, node-local Gotify event gaps and long-running tests.
 - Production deployment, release signing, distribution and migration from old APKs.

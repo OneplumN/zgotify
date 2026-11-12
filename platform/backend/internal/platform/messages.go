@@ -99,6 +99,36 @@ func (s *Store) Ingest(ctx context.Context, token string, in NewMessage) (uint64
 	return uint64(id), true, tx.Commit()
 }
 
+func (s *Store) Topics(ctx context.Context, actor Session) ([]Topic, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT t.id,t.name FROM topics t
+JOIN memberships mb ON mb.topic_id=t.id
+WHERE mb.person_id=? ORDER BY t.id`, actor.Person.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Topic, 0)
+	for rows.Next() {
+		var topic Topic
+		if err := rows.Scan(&topic.ID, &topic.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, topic)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) Message(ctx context.Context, actor Session, id uint64) (Message, error) {
+	var out Message
+	err := s.DB.QueryRowContext(ctx, `SELECT m.id,m.topic_id,m.title,m.body,m.priority,m.created_at,
+COALESCE(st.is_read,FALSE),COALESCE(st.is_hidden,FALSE),COALESCE(st.is_favorite,FALSE),COALESCE(st.version,0)
+FROM messages m JOIN memberships mb ON mb.topic_id=m.topic_id AND mb.person_id=?
+LEFT JOIN message_states st ON st.message_id=m.id AND st.person_id=?
+WHERE m.id=?`, actor.Person.ID, actor.Person.ID, id).
+		Scan(&out.ID, &out.TopicID, &out.Title, &out.Body, &out.Priority, &out.CreatedAt, &out.State.Read, &out.State.Hidden, &out.State.Favorite, &out.State.Version)
+	return out, mapDatabaseError(err)
+}
+
 func (s *Store) Messages(ctx context.Context, actor Session, before uint64, includeHidden bool) ([]Message, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT m.id,m.topic_id,m.title,m.body,m.priority,m.created_at,
 COALESCE(st.is_read,FALSE),COALESCE(st.is_hidden,FALSE),COALESCE(st.is_favorite,FALSE),COALESCE(st.version,0)

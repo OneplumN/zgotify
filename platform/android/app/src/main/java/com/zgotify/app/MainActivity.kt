@@ -26,22 +26,30 @@ import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
+    companion object {
+        // Serialize persistence across Activity recreation, including old in-flight requests.
+        private val inboxWorker = Executors.newSingleThreadExecutor()
+    }
     private lateinit var profiles: ProfileStore
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
     private lateinit var list: ListView
-    private var messages = listOf<JSONObject>()
+    private lateinit var cache: RoomMessageCache
+    private lateinit var sync: InboxSync
+    private var messages = listOf<InboxRow>()
     private var includeHidden = false
     private var loading = false
     private var page = 0L
-    private var generation = 0L
+    @Volatile private var generation = 0L
+    @Volatile private var destroyed = false
+    private var nextBefore: Long? = null
     private var loginDialog: AlertDialog? = null
-    private val worker = Executors.newSingleThreadExecutor()
+    private val accountDialogs = mutableSetOf<AlertDialog>()
+    private val worker = inboxWorker
     private val main = Handler(Looper.getMainLooper())
     private val poll = object : Runnable {
         override fun run() {
@@ -53,6 +61,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         profiles = ProfileStore(this)
+        cache = RoomMessageCache(applicationContext)
+        sync = InboxSync(cache)
         title = "zgotify"
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -79,9 +89,26 @@ class MainActivity : Activity() {
         if (profiles.active() == null) login()
     }
 
-    override fun onResume() { super.onResume(); main.post(poll) }
+    override fun onResume() {
+        super.onResume()
+        generation++
+        dismissAccountDialogs()
+        loading = false
+        messages = emptyList()
+        list.adapter = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, emptyList())
+        status.text = if (profiles.active() == null) "暂无账号" else "验证身份与缓存"
+        refresh()
+        main.postDelayed(poll, 15000)
+    }
     override fun onPause() { main.removeCallbacks(poll); super.onPause() }
-    override fun onDestroy() { generation++; main.removeCallbacks(poll); worker.shutdownNow(); super.onDestroy() }
+    override fun onDestroy() {
+        destroyed = true
+        generation++
+        dismissAccountDialogs()
+        main.removeCallbacks(poll)
+        worker.execute { cache.close() }
+        super.onDestroy()
+    }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menu.add(0, 1, 0, "刷新").setIcon(android.R.drawable.ic_popup_sync).setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
@@ -93,20 +120,29 @@ class MainActivity : Activity() {
         menu.add(0, 7, 6, "更早的消息")
         menu.add(0, 8, 7, "注销当前设备")
         menu.add(0, 9, 8, "修改密码")
+        menu.add(0, 10, 9, "待同步修改")
         return true
+    }
+
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        listOf(1, 4, 5, 7, 8, 9, 10).forEach { menu.findItem(it)?.isEnabled = !loading }
+        menu.findItem(4)?.isChecked = includeHidden
+        menu.findItem(7)?.isEnabled = !loading && nextBefore != null
+        return super.onPrepareOptionsMenu(menu)
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
-            1 -> { page = 0; refresh() }
+            1 -> { page = 0; refresh(force = true) }
             2 -> chooseAccount()
             3 -> login()
             4 -> { includeHidden = !includeHidden; item.isChecked = includeHidden; page = 0; refresh() }
             5 -> audit()
             6 -> diagnostics()
-            7 -> messages.lastOrNull()?.let { page = it.getLong("id"); refresh() }
+            7 -> nextBefore?.let { page = it; refresh() }
             8 -> logout()
             9 -> changePassword()
+            10 -> pendingChanges()
             else -> return super.onOptionsItemSelected(item)
         }
         return true
@@ -114,9 +150,13 @@ class MainActivity : Activity() {
 
     private fun updateAccount() {
         generation++
+        dismissAccountDialogs()
         loading = false
+        includeHidden = false
+        invalidateOptionsMenu()
         progress.visibility = View.GONE
         page = 0
+        nextBefore = null
         messages = emptyList()
         list.adapter = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, emptyList())
         actionBar?.subtitle = profiles.active()?.let { "${it.username} · ${it.server}" } ?: "未登录"
@@ -127,23 +167,33 @@ class MainActivity : Activity() {
     private fun <T> request(profile: Profile, operation: () -> T, done: (T) -> Unit) {
         if (loading) return
         loading = true
+        invalidateOptionsMenu()
         progress.visibility = View.VISIBLE
         val epoch = generation
         worker.execute {
-            val result = runCatching(operation)
+            val result = runCatching {
+                if (!current(profile, epoch)) throw StaleSessionException()
+                operation()
+            }.onFailure { error ->
+                if (error is ApiException && error.status == 401 && profile.personId > 0 && current(profile, epoch)) runCatching { cache.clear(profile.cacheKey) }
+            }
             main.post {
-                if (isDestroyed || epoch != generation || profiles.active()?.key != profile.key) return@post
+                if (!current(profile, epoch)) return@post
                 loading = false
+                invalidateOptionsMenu()
                 progress.visibility = View.GONE
                 result.onSuccess(done).onFailure { error ->
                     status.setTextColor(Color.rgb(170, 35, 35))
                     status.text = when ((error as? ApiException)?.status) {
                         401 -> "登录已失效，请重新登录"
                         409 -> "状态已在其他设备更新，请刷新后重试"
-                        else -> error.message ?: "请求失败"
+                        else -> if (error is IllegalStateException) error.message ?: "操作失败" else "请求失败，请稍后重试"
                     }
                     if (error is ApiException && error.status == 401) {
+                        dismissAccountDialogs()
                         profiles.save(profile.copy(token = ""))
+                        messages = emptyList()
+                        list.adapter = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, emptyList())
                         login(profile)
                     }
                 }
@@ -151,28 +201,59 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun refresh() {
+    private fun current(profile: Profile, epoch: Long): Boolean =
+        !destroyed && epoch == generation && profiles.active() == profile
+
+    private fun showAccountDialog(dialog: AlertDialog) {
+        accountDialogs.add(dialog)
+        dialog.setOnDismissListener { accountDialogs.remove(dialog) }
+        dialog.show()
+    }
+
+    private fun dismissAccountDialogs() {
+        accountDialogs.toList().forEach { it.dismiss() }
+        accountDialogs.clear()
+    }
+
+    private fun refresh(force: Boolean = false) {
         val profile = profiles.active() ?: return
-        if (profile.token.isEmpty()) { status.text = "需要重新登录"; return }
-        request(profile, { Api.request(profile, "GET", "/v1/messages?include_hidden=$includeHidden&before=$page") }) { response ->
-            val array = response.getJSONArray("messages")
-            messages = (0 until array.length()).map { array.getJSONObject(it) }
-            status.setTextColor(Color.DKGRAY)
-            status.text = if (messages.isEmpty()) "暂无消息" else "${messages.size} 条消息"
-            val rows = messages.map { msg ->
-                val state = msg.getJSONObject("state")
-                val flags = listOfNotNull(if (state.getBoolean("read")) "已读" else "未读", if (state.getBoolean("hidden")) "已隐藏" else null, if (state.getBoolean("favorite")) "已收藏" else null)
-                "${msg.getString("title")}\n${flags.joinToString(" · ")} · P${msg.getInt("priority")}\n${msg.getString("message").take(160)}"
+        if (profile.token.isEmpty() || profile.personId <= 0) { status.text = "需要重新登录"; return }
+        val epoch = generation
+        val hidden = includeHidden
+        val before = page
+        request(profile, {
+            val cached = sync.cached(profile.cacheKey, hidden, before)
+            main.post {
+                if (current(profile, epoch)) render(cached.copy(offline = true))
             }
-            list.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, rows) {
-                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                    return (super.getView(position, convertView, parent) as TextView).apply {
-                        textSize = 16f
-                        setPadding(14, 20, 14, 20)
-                        maxLines = 6
-                    }
+            val remote = GuardedInboxRemote(ApiInboxRemote(profile)) { current(profile, epoch) }
+            sync.refresh(profile.cacheKey, profile.personId, remote, hidden, before, force)
+        }, ::render)
+    }
+
+    private fun render(snapshot: InboxSnapshot) {
+        messages = snapshot.rows
+        nextBefore = snapshot.nextBefore
+        invalidateOptionsMenu()
+        status.setTextColor(if (snapshot.offline || snapshot.conflictCount > 0) Color.rgb(160, 65, 20) else Color.DKGRAY)
+        val connection = when { snapshot.cacheExpired -> "请联网验证身份"; snapshot.offline -> "离线缓存"; else -> "在线" }
+        status.text = "$connection · ${messages.size} 条 · 待同步 ${snapshot.pendingCount} · 待处理 ${snapshot.conflictCount}"
+        val rows = messages.map { row ->
+            val msg = row.message
+            val state = msg.state
+            val pending = row.pending
+            val flags = listOfNotNull(if (state.read) "已读" else "未读", if (state.hidden) "已隐藏" else null,
+                if (state.favorite) "已收藏" else null,
+                if (pending?.conflict == true || pending?.problem != null) "同步待处理" else if (pending != null) "待同步" else null)
+            "${msg.title}\n${flags.joinToString(" · ")} · P${msg.priority}\n${msg.body.take(160)}"
+        }
+        list.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, rows) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                (super.getView(position, convertView, parent) as TextView).apply {
+                    textSize = 16f
+                    setPadding(14, 20, 14, 20)
+                    maxLines = 6
                 }
-            }
         }
     }
 
@@ -191,18 +272,23 @@ class MainActivity : Activity() {
                 val body = JSONObject().put("username", candidate.username).put("password", password.text.toString()).put("device_name", "${Build.MANUFACTURER} ${Build.MODEL}".take(128))
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
                 worker.execute {
-                    val result = runCatching { Api.request(candidate, "POST", "/v1/login", body) }
+                    val result = runCatching { Api.login(candidate, body) }
                     main.post {
-                        if (isDestroyed) return@post
+                        if (isDestroyed) {
+                            result.getOrNull()?.let(::revokeUnused)
+                            return@post
+                        }
                         dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
-                        result.onSuccess { response ->
+                        result.onSuccess { authenticated ->
                             if (!dialog.isShowing) {
-                                worker.execute { runCatching { Api.request(candidate.copy(token = response.getString("token")), "DELETE", "/v1/session") } }
+                                revokeUnused(authenticated)
                                 return@onSuccess
                             }
-                            runCatching { profiles.save(candidate.copy(username = response.getJSONObject("person").getString("username"), token = response.getString("token"))) }
+                            runCatching {
+                                profiles.save(authenticated)
+                            }
                                 .onSuccess { password.text.clear(); dialog.dismiss(); updateAccount() }
-                                .onFailure { password.error = "无法保存账号，请重试" }
+                                .onFailure { revokeUnused(authenticated); password.error = "无法保存账号，请重试" }
                         }.onFailure { if (dialog.isShowing) password.error = it.message ?: "登录失败" }
                     }
                 }
@@ -214,25 +300,72 @@ class MainActivity : Activity() {
     private fun chooseAccount() {
         val all = profiles.all()
         AlertDialog.Builder(this).setTitle("账号")
-            .setItems(all.map { "${it.username}\n${it.server}" }.toTypedArray()) { _, index -> profiles.select(all[index]); updateAccount() }
-            .setPositiveButton("添加", { _, _ -> login() }).setNegativeButton("取消", null).show()
+            .setItems(all.map { "${it.username}\n${it.server}" }.toTypedArray()) { _, index ->
+                val selected = all[index]
+                profiles.select(selected)
+                updateAccount()
+                if (selected.token.isEmpty() || selected.personId <= 0) login(selected)
+            }
+            .setPositiveButton("添加", { _, _ -> login() }).setNegativeButton("取消", null).create().also(::showAccountDialog)
     }
 
-    private fun showMessage(message: JSONObject) {
+    private fun revokeUnused(profile: Profile) {
+        Thread { runCatching { Api.request(profile, "DELETE", "/v1/session") } }.start()
+    }
+
+    private fun showMessage(row: InboxRow) {
+        if (loading) return
         val profile = profiles.active() ?: return
-        val state = message.getJSONObject("state")
-        val options = arrayOf(if (state.getBoolean("read")) "标记未读" else "标记已读", if (state.getBoolean("hidden")) "取消隐藏" else "为我隐藏", if (state.getBoolean("favorite")) "取消收藏" else "收藏")
-        val body = TextView(this).apply { text = message.getString("message"); setPadding(32, 20, 32, 20); setTextIsSelectable(true) }
+        val epoch = generation
+        val message = row.message
+        if (row.pending?.conflict == true || row.pending?.problem != null) { resolveConflict(profile, row); return }
+        val state = message.state
+        val options = arrayOf(if (state.read) "标记未读" else "标记已读", if (state.hidden) "取消隐藏" else "为我隐藏", if (state.favorite) "取消收藏" else "收藏")
+        val body = TextView(this).apply { text = message.body; setPadding(32, 20, 32, 20); setTextIsSelectable(true) }
         val content = android.widget.ScrollView(this).apply { addView(body) }
-        AlertDialog.Builder(this).setTitle(message.getString("title")).setView(content)
+        AlertDialog.Builder(this).setTitle(message.title).setView(content)
             .setPositiveButton("操作") { _, _ ->
+                if (!current(profile, epoch)) return@setPositiveButton
                 AlertDialog.Builder(this).setTitle("个人状态").setItems(options) { _, index ->
-                    if (profiles.active()?.key != profile.key) return@setItems
-                    val property = arrayOf("read", "hidden", "favorite")[index]
-                    val patch = JSONObject().put(property, !state.getBoolean(property)).put("expected_version", state.getLong("version"))
-                    request(profile, { Api.request(profile, "PATCH", "/v1/messages/${message.getLong("id")}/state", patch) }) { refresh() }
-                }.setNegativeButton("取消", null).show()
-            }.setNegativeButton("关闭", null).show()
+                    if (!current(profile, epoch)) return@setItems
+                    val property = StateField.entries[index]
+                    val value = !listOf(state.read, state.hidden, state.favorite)[index]
+                    request(profile, {
+                        sync.queue(profile.cacheKey, message.id, property, value)
+                        sync.cached(profile.cacheKey, includeHidden, page)
+                    }) { render(it); refresh(force = true) }
+                }.setNegativeButton("取消", null).create().also(::showAccountDialog)
+            }.setNegativeButton("关闭", null).create().also(::showAccountDialog)
+    }
+
+    private fun resolveConflict(profile: Profile, row: InboxRow) {
+        val epoch = generation
+        request(profile, { cache.message(profile.cacheKey, row.message.id) }) { latest ->
+            if (latest == null) { refresh(); return@request }
+            fun flags(value: PersonalState) = "${if (value.read) "已读" else "未读"} / ${if (value.hidden) "已隐藏" else "可见"} / ${if (value.favorite) "已收藏" else "未收藏"}"
+            fun resolve(local: Boolean) {
+                if (!current(profile, epoch)) return
+                request(profile, { sync.resolve(profile.cacheKey, row.message.id, local) }) { refresh(force = true) }
+            }
+            AlertDialog.Builder(this).setTitle("同步待处理")
+                .setMessage("${row.pending?.problem ?: "其他设备已更新此消息"}\n\n服务器：${flags(latest.state)}\n本机修改：${flags(row.message.state)}")
+                .setPositiveButton("保留本机修改") { _, _ -> resolve(true) }
+                .setNegativeButton("使用服务器状态") { _, _ -> resolve(false) }
+                .setNeutralButton("取消", null).create().also(::showAccountDialog)
+        }
+    }
+
+    private fun pendingChanges() {
+        val profile = profiles.active() ?: return
+        if (profile.personId <= 0) return
+        val epoch = generation
+        request(profile, { sync.pendingRows(profile.cacheKey) }) { rows ->
+            if (rows.isEmpty()) { Toast.makeText(this, "没有可处理的修改，请先联网刷新", Toast.LENGTH_SHORT).show(); return@request }
+            AlertDialog.Builder(this).setTitle("待同步修改")
+                .setItems(rows.map { it.message.title }.toTypedArray()) { _, index ->
+                    if (current(profile, epoch)) showMessage(rows[index])
+                }.setNegativeButton("关闭", null).create().also(::showAccountDialog)
+        }
     }
 
     private fun audit() {
@@ -244,19 +377,21 @@ class MainActivity : Activity() {
                 "${event.getString("created_at")}\n${event.getString("action")} · 用户 ${event.getLong("actor_id")}\n${event.getString("device_name")} · 对象 ${event.getLong("object_id")}" 
             }
             val view = TextView(this).apply { this.text = text.ifEmpty { "暂无记录" }; setPadding(24, 12, 24, 12) }
-            AlertDialog.Builder(this).setTitle("操作记录").setView(android.widget.ScrollView(this).apply { addView(view) }).setPositiveButton("关闭", null).show()
+            AlertDialog.Builder(this).setTitle("操作记录").setView(android.widget.ScrollView(this).apply { addView(view) }).setPositiveButton("关闭", null).create().also(::showAccountDialog)
         }
     }
 
     private fun logout() {
         val profile = profiles.active() ?: return
         AlertDialog.Builder(this).setTitle("注销当前设备？").setNegativeButton("取消", null).setPositiveButton("注销") { _, _ ->
-            if (profile.token.isEmpty()) { profiles.remove(profile); updateAccount() }
-            else request(profile, {
-                try { Api.request(profile, "DELETE", "/v1/session") }
-                catch (error: ApiException) { if (error.status != 401) throw error; JSONObject() }
+            request(profile, {
+                if (profile.token.isNotEmpty()) {
+                    try { Api.request(profile, "DELETE", "/v1/session") }
+                    catch (error: ApiException) { if (error.status != 401) throw error }
+                }
+                if (profile.personId > 0) cache.clear(profile.cacheKey)
             }) { profiles.remove(profile); updateAccount() }
-        }.show()
+        }.create().also(::showAccountDialog)
     }
 
     private fun changePassword() {
@@ -265,8 +400,11 @@ class MainActivity : Activity() {
         val next = field("新密码", secret = true)
         AlertDialog.Builder(this).setTitle("修改密码").setView(column(old, next)).setNegativeButton("取消", null).setPositiveButton("修改") { _, _ ->
             val body = JSONObject().put("old_password", old.text.toString()).put("new_password", next.text.toString())
-            request(profile, { Api.request(profile, "POST", "/v1/password", body) }) { profiles.save(profile.copy(token = "")); login(profile) }
-        }.show()
+            request(profile, {
+                Api.request(profile, "POST", "/v1/password", body)
+                if (profile.personId > 0) cache.clear(profile.cacheKey)
+            }) { profiles.save(profile.copy(token = "")); updateAccount(); login(profile) }
+        }.create().also(::showAccountDialog)
     }
 
     private fun diagnostics() {
