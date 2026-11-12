@@ -81,6 +81,8 @@ with a 192 MiB memory limit and a localhost-only API port.
 
 ```sh
 cd /opt/zgotify-test
+chmod 755 image/zgotify
+chmod 644 image/ca-certificates.crt
 docker compose config --quiet
 docker compose build api
 docker run --rm --network none --read-only --cap-drop ALL \
@@ -89,6 +91,10 @@ docker run --rm --network none --read-only --cap-drop ALL \
 
 The help command checks Linux execution, not database or API readiness. The CA
 bundle is a build-time snapshot; rebuild the image when updating trusted CAs.
+The build input permissions matter: an uploaded binary with mode `700` cannot
+be executed by container UID 65532. Set permissions before building and run the
+non-root help check before replacing a running API. Do not change secret-file
+permissions as part of this build step.
 
 ## Configure the Dedicated RDS Test Database
 

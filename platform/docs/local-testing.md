@@ -114,6 +114,16 @@ force-stop/reopen, account cancellation, state isolation, explicit conflicts,
 membership removal and logout. It does not test the Go/MySQL deployment or OEM
 background delivery. Begin each run with a fresh disposable app data set.
 
+For the separate two-emulator test against the deployed Go API and MySQL, see
+`android-deployed-acceptance.md`. It requires explicit isolated-test consent and
+an administrator secret pipe; public CI runs only its guard tests:
+
+```sh
+python3 -B -m unittest discover -s android/testing -p test_deployed_acceptance.py -v
+```
+
+Run this command from the platform root, not the `android` directory.
+
 ## Manual Core Workflow
 
 1. Bootstrap the administrator and log in using `POST /v1/login`.

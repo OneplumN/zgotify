@@ -1,0 +1,6 @@
+# Explicit opt-in: update only the isolated API for Android acceptance.
+# Keep the Gotify 2.9.1 fixture, importer image and database unchanged.
+services:
+  api:
+    image: ${ZGOTIFY_ANDROID_API_IMAGE:?Set the verified Android acceptance API image}
+    pull_policy: never

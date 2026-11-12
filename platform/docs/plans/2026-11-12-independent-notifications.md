@@ -18,6 +18,9 @@ networking/rendering components after aligning the deployed zgotify source.
 
 ## Decisions
 
+- Confirmed on 2026-11-12: Gotify Server 2.9.1 remains the upstream compatibility
+  and acceptance baseline. This project does not upgrade existing Gotify instances
+  to 3.x or migrate their databases. Any later 3.x support is a separate change.
 - Confirmed by the user: administrators create personal accounts for the first
   internal release. No public registration. Corporate SSO is a later adapter.
 - Keep incident acknowledgement, resolution, escalation and on-call assignments
@@ -117,7 +120,8 @@ Files: isolated `android/` app; retain reference checkouts unchanged.
 - [x] M2 Android 0.2 internal APK build and lint (0 errors, 7 warnings).
 - [x] M2 Room offline storage, durable state queue and 77 Android unit tests.
 - [x] M2 Android 36 emulator UI acceptance against an isolated API fixture (7 groups).
-- [ ] M2 deployed-API and two-physical-device verification.
+- [x] M2 deployed Go API/MySQL and two-emulator verification (eight checks).
+- [ ] M2 two-physical-device verification.
 - [x] Dedicated ECS inventory and authorized old-lab shutdown with data retained.
 - [x] Isolated Docker configuration and file-backed database secret support.
 - [x] Linux image build and isolated CLI execution on the authorized ECS.

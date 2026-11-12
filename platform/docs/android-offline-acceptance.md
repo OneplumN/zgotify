@@ -70,8 +70,8 @@ is counted as acceptance. The final run uses an ADB loopback tunnel.
 - No promise of delivery while backgrounded, force-stopped or screen-off. The
   force-stop test reopens the app and checks persistence, not background delivery.
 - No production changes, public release, release signing or default-branch merge.
-- The new read endpoints are source changes in this milestone. The earlier ECS
-  deployment has not been updated by this test. Deploy the matching backend to
-  the isolated test environment before trying this APK against that environment.
+- This fixture-only stage did not deploy the new read endpoints. A later isolated
+  API-only deployment and two-emulator Go/MySQL run are separately recorded in
+  `android-deployed-acceptance.md`; they are not results of this fixture test.
 - The cache policy cannot immediately revoke content on a disconnected phone.
   Personal state synchronizes on foreground/manual refresh, not in real time.

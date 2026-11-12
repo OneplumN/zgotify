@@ -22,6 +22,8 @@ The original Android client and release workflows remain at the repository root.
 The independent workflow runs Go race tests and vet, Python harness unit tests,
 and Android unit tests (including Room/Robolectric), debug build and lint. It can retain the independent debug APK as a
 one-day Actions artifact, but never creates or replaces a GitHub Release.
+The Python checks cover both Gotify-import and deployed-Android harness guards;
+they do not create cloud users or run emulator acceptance in public CI.
 
 Database-dependent Go tests need an explicitly provisioned fresh test schema and
 are skipped without its DSN. Public CI does not use the ECS, RDS, production

@@ -6,6 +6,10 @@ Independent notification application built alongside the existing Gotify clients
 
 Internal implementation in progress. Not a production release.
 
+Upstream compatibility and acceptance baseline: **Gotify Server 2.9.1**. The
+independent application does not require a Gotify 3.x upgrade or changes to
+Gotify's database. Existing production Gotify/iGotify deployments stay unchanged.
+
 - Go API implements personal accounts, topic membership, per-person state,
   cross-device session storage, idempotent ingestion and transactional audit.
 - Local Go race tests and vet pass. Real MySQL 8.4.13 integration passed on the
@@ -15,7 +19,10 @@ Internal implementation in progress. Not a production release.
   offline state queue, bounded foreground retries and explicit conflict handling.
   All 77 Android unit tests pass; build/lint pass with no errors and seven warnings.
   Seven Android 36 emulator UI workflows passed against a synthetic API fixture.
-  Physical-device and deployed-API acceptance remain separate from these checks.
+  A later two-emulator run passed eight checks against the deployed Go API/MySQL,
+  including same-person sync, different-person isolation, offline queue recovery
+  and authorization revocation. See `docs/android-deployed-acceptance.md`.
+  Physical-phone and background delivery acceptance remain pending.
 - Docker test deployment is isolated from the old Gotify/iGotify projects and
   existing ECS websites. Database credentials are supplied through a secret file.
 - The Gotify REST connector now implements protected source configuration,
